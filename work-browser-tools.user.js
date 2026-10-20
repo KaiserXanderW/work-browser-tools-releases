@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Work Browser Tools
 // @namespace    https://github.com/KaiserXanderW/work-browser-tools-releases
-// @version      1.0.1
+// @version      1.0.2
 // @description  Work browser tools in one Violentmonkey entry. Menu: "Tools on this page…" switches single tools off.
 // @match        https://*.assd.com/*
 // @match        https://*.assd.com:9443/*
@@ -31,11 +31,40 @@
 // ==/UserScript==
 
 (() => {
+  // packages/gm/settings.js
+  function readSetting(key) {
+    let v = GM_getValue(key, "");
+    return typeof v == "string" ? v.trim() : "";
+  }
+  function askSetting({ key, question, check = () => null, normalize: normalize2 = (v) => v }, win = window) {
+    let answer = win.prompt(question, readSetting(key));
+    if (answer === null) return null;
+    let value = answer.trim() ? normalize2(answer.trim()) : "", problem = value ? check(value) : null;
+    return problem ? (win.alert(problem), null) : (GM_setValue(key, value), value);
+  }
+  function menuSetting(setting, onChange = () => {
+  }, win = window) {
+    win === win.top && GM_registerMenuCommand(setting.caption, () => {
+      let v = askSetting(setting);
+      v !== null && onChange(v);
+    });
+  }
+  var checkHttpsUrl = (v) => /^https:\/\/[^\s/?#]+\/\S*$/.test(v) ? null : "That is not an https:// address.", SIGNATURE_SETTING = {
+    key: "work-browser-tools.signatureName",
+    caption: "Set the name you sign with…",
+    question: "The name to sign replies with:"
+  };
+
   // scripts/assd-autofill/src/main.js
+  var USER_SETTING = {
+    key: "work-browser-tools.assdUserCode",
+    caption: "Set your ASSD user code…",
+    question: "Your ASSD user code, written into memo entries:"
+  };
   function start() {
     (function() {
       "use strict";
-      let USER = "WEGENSTEI3";
+      menuSetting(USER_SETTING);
       function findActiveTab() {
         let titlebar = document.querySelector(
           ".ui-dialog-titlebar.ui-widget-header.ui-corner-all.ui-helper-clearfix.selected.tabbed.maximize.active"
@@ -133,20 +162,33 @@
           btn.className = "cmd_button assd-matchcode-btn", btn.type = "button", btn.title = "Matchcode aus Namen suchen", btn.textContent = "Matchcode", btn.style.cssText = "margin-right: 4px;", btn.addEventListener("click", () => triggerMatchcodeSearch(dialog)), saveBtn.after(btn);
         }
       }
-      function getMemoTimestamp() {
-        let now = /* @__PURE__ */ new Date(), dd = String(now.getDate()).padStart(2, "0"), mm = String(now.getMonth() + 1).padStart(2, "0"), yy = String(now.getFullYear()).slice(-2);
-        return `${dd}.${mm}.${yy} -  - ${USER}`;
+      function getUser() {
+        return readSetting(USER_SETTING.key) || askSetting(USER_SETTING) || "";
       }
-      function insertAtCursor(textarea, text) {
+      function getMemoDate() {
+        let now = /* @__PURE__ */ new Date(), dd = String(now.getDate()).padStart(2, "0"), mm = String(now.getMonth() + 1).padStart(2, "0"), yy = String(now.getFullYear()).slice(-2);
+        return `${dd}.${mm}.${yy}`;
+      }
+      function insertAtCursor(textarea, text, cursorInText = text.length) {
         let start11 = textarea.selectionStart, end = textarea.selectionEnd;
-        textarea.value = textarea.value.slice(0, start11) + text + textarea.value.slice(end), textarea.setSelectionRange(start11 + text.length, start11 + text.length), textarea.focus(), textarea.dispatchEvent(new Event("input", { bubbles: !0 })), textarea.dispatchEvent(new Event("change", { bubbles: !0 }));
+        textarea.value = textarea.value.slice(0, start11) + text + textarea.value.slice(end), textarea.setSelectionRange(start11 + cursorInText, start11 + cursorInText), textarea.focus(), textarea.dispatchEvent(new Event("input", { bubbles: !0 })), textarea.dispatchEvent(new Event("change", { bubbles: !0 }));
       }
       function insertMemoTimestamp(textarea) {
-        let stamp = getMemoTimestamp() + `
+        let user = getUser();
+        if (!user) return;
+        let stamp = `${getMemoDate()} -  - ${user}
 `;
         textarea.value = stamp + textarea.value;
         let cursorPos = stamp.indexOf(" -  - ") + 3;
         textarea.setSelectionRange(cursorPos, cursorPos), textarea.focus(), textarea.dispatchEvent(new Event("input", { bubbles: !0 })), textarea.dispatchEvent(new Event("change", { bubbles: !0 }));
+      }
+      function insertInvoiceAddress(textarea) {
+        let user = getUser();
+        if (!user) return;
+        let head = `${getMemoDate()} - <JADDRESS>
+`;
+        insertAtCursor(textarea, `${head}
+</JADDRESS> - ${user}`, head.length);
       }
       function makeMemoBtn(label, title, onClick) {
         let btn = document.createElement("a");
@@ -163,6 +205,11 @@
             "📅 Stamp",
             "Datum + Kürzel einfügen",
             () => insertMemoTimestamp(memo)
+          ),
+          makeMemoBtn(
+            "Invoice Address",
+            "Datum + Kürzel + Rechnungsadresse (JADDRESS) einfügen",
+            () => insertInvoiceAddress(memo)
           ),
           makeMemoBtn(
             "Parking",
@@ -1263,30 +1310,6 @@ ahi-toast[hidden] { display: none !important; }
   `);
     })();
   }
-
-  // packages/gm/settings.js
-  function readSetting(key) {
-    let v = GM_getValue(key, "");
-    return typeof v == "string" ? v.trim() : "";
-  }
-  function askSetting({ key, question, check = () => null, normalize: normalize2 = (v) => v }, win = window) {
-    let answer = win.prompt(question, readSetting(key));
-    if (answer === null) return null;
-    let value = answer.trim() ? normalize2(answer.trim()) : "", problem = value ? check(value) : null;
-    return problem ? (win.alert(problem), null) : (GM_setValue(key, value), value);
-  }
-  function menuSetting(setting, onChange = () => {
-  }, win = window) {
-    win === win.top && GM_registerMenuCommand(setting.caption, () => {
-      let v = askSetting(setting);
-      v !== null && onChange(v);
-    });
-  }
-  var checkHttpsUrl = (v) => /^https:\/\/[^\s/?#]+\/\S*$/.test(v) ? null : "That is not an https:// address.", SIGNATURE_SETTING = {
-    key: "work-browser-tools.signatureName",
-    caption: "Set the name you sign with…",
-    question: "The name to sign replies with:"
-  };
 
   // scripts/novomind-email-response-index/src/main.js
   var TEMPLATES_SETTING = {
