@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Work Browser Tools
 // @namespace    https://github.com/KaiserXanderW/work-browser-tools-releases
-// @version      1.0.0
+// @version      1.0.1
 // @description  Work browser tools in one Violentmonkey entry. Menu: "Tools on this page…" switches single tools off.
 // @match        https://*.assd.com/*
 // @match        https://*.assd.com:9443/*
@@ -12,6 +12,7 @@
 // @match        *://forms.microsoft.com/*
 // @match        https://*.novomind.com/agent/client/index.imail
 // @include      /^https:\/\/[^\/]*-[^\/]*\.assd\.com\//
+// @include      /^https?:\/\/[^\/@]*novomind[^\/@]*\//
 // @run-at       document-start
 // @grant        GM_addElement
 // @grant        GM_addStyle
@@ -1275,8 +1276,8 @@ ahi-toast[hidden] { display: none !important; }
     return problem ? (win.alert(problem), null) : (GM_setValue(key, value), value);
   }
   function menuSetting(setting, onChange = () => {
-  }) {
-    GM_registerMenuCommand(setting.caption, () => {
+  }, win = window) {
+    win === win.top && GM_registerMenuCommand(setting.caption, () => {
       let v = askSetting(setting);
       v !== null && onChange(v);
     });
@@ -3783,7 +3784,7 @@ ${response.responseText}`, elements.output.textContent = errorMsg, console.error
     { id: "assd-login", label: "ASSD login", match: [], include: ["/^https:\\/\\/[^\\/]*-[^\\/]*\\.assd\\.com\\//"], timing: "document-end", frames: !0, start: start3 },
     { id: "assd-ocr-assist", label: "ASSD OCR assist", match: ["https://*.assd.com/*", "https://*.assd.com:9443/*"], include: [], timing: "document-start", frames: !0, start: start4 },
     { id: "novomind-email-response-index", label: "Email templates", match: ["https://*.novomind.com/*"], include: [], timing: "document-end", frames: !0, start: start5 },
-    { id: "novomind-house-contact-index", label: "House contact index", match: ["https://*.novomind.com/*"], include: [], timing: "document-end", frames: !0, start: start6 },
+    { id: "novomind-house-contact-index", label: "House contact index", match: ["https://*.novomind.com/*"], include: ["/^https?:\\/\\/[^\\/@]*novomind[^\\/@]*\\//"], timing: "document-end", frames: !0, start: start6 },
     { id: "novomind-offline-time-tracker", label: "Offline time tracker", match: ["https://*.novomind.com/*", "*://forms.office.com/*", "*://forms.cloud.microsoft/*", "*://forms.microsoft.com/*"], include: [], timing: "document-end", frames: !0, start: start7 },
     { id: "novomind-toggle-extra-time", label: "Toggle extra time", match: ["https://*.novomind.com/*"], include: [], timing: "document-end", frames: !0, start: start8 },
     { id: "novomind-update-email-bookingnumber-mybooking", label: "Booking number to MyBooking", match: ["https://*.novomind.com/*"], include: [], timing: "document-end", frames: !0, start: start9 },
@@ -3851,8 +3852,29 @@ ${response.responseText}`, elements.output.textContent = errorMsg, console.error
       state.failed.push(tool.id), log.error(tag, "failed to start:", e);
     }
   }
+  function pageHref(win) {
+    let w = win;
+    for (let i = 0; i < 20; i += 1) {
+      let href;
+      try {
+        href = w.location.href;
+      } catch {
+        return win.location.href;
+      }
+      if (!/^(about|blob|data):/i.test(href)) return href;
+      let parent;
+      try {
+        parent = w.parent;
+      } catch {
+        return href;
+      }
+      if (!parent || parent === w) return href;
+      w = parent;
+    }
+    return win.location.href;
+  }
   function boot(tools, gm, win = window) {
-    let isTop = win === win.top, disabled = readDisabled(gm), p = plan(tools, { href: win.location.href, isTop, disabled }), state = { matched: p.matched.map((t) => t.id), started: [], failed: [], switchedOff: p.switchedOff.map((t) => t.id) };
+    let isTop = win === win.top, disabled = readDisabled(gm), p = plan(tools, { href: pageHref(win), isTop, disabled }), state = { matched: p.matched.map((t) => t.id), started: [], failed: [], switchedOff: p.switchedOff.map((t) => t.id) };
     Object.defineProperty(globalThis, "__workBrowserTools", { value: state, configurable: !0 });
     for (let t of p.toStart) whenTiming(t.timing, () => runTool(t, state), win.document, win);
     return isTop && p.matched.length && gm.registerMenuCommand("Tools on this page…", () => openSwitchboard(p.matched, gm, win)), p.switchedOff.length && console.info(LOG2, "switched off here:", state.switchedOff.join(", ")), state;
