@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Work Browser Tools
 // @namespace    https://github.com/KaiserXanderW/work-browser-tools-releases
-// @version      1.0.2
+// @version      1.0.3
 // @description  Work browser tools in one Violentmonkey entry. Menu: "Tools on this page…" switches single tools off.
 // @match        https://*.assd.com/*
 // @match        https://*.assd.com:9443/*
@@ -183,12 +183,10 @@
         textarea.setSelectionRange(cursorPos, cursorPos), textarea.focus(), textarea.dispatchEvent(new Event("input", { bubbles: !0 })), textarea.dispatchEvent(new Event("change", { bubbles: !0 }));
       }
       function insertInvoiceAddress(textarea) {
-        let user = getUser();
-        if (!user) return;
-        let head = `${getMemoDate()} - <JADDRESS>
+        let head = `<JADDRESS>
 `;
         insertAtCursor(textarea, `${head}
-</JADDRESS> - ${user}`, head.length);
+</JADDRESS>`, head.length);
       }
       function makeMemoBtn(label, title, onClick) {
         let btn = document.createElement("a");
@@ -208,29 +206,20 @@
           ),
           makeMemoBtn(
             "Invoice Address",
-            "Datum + Kürzel + Rechnungsadresse (JADDRESS) einfügen",
+            "Rechnungsadresse (JADDRESS) an der Cursorposition einfügen",
             () => insertInvoiceAddress(memo)
-          ),
-          makeMemoBtn(
-            "Parking",
-            "Parking added as per sender",
-            () => insertAtCursor(memo, "Parking added as per sender")
-          ),
-          makeMemoBtn(
-            "Room Fixed",
-            "Room allocation failed – reassigned",
-            () => insertAtCursor(memo, "Room allocation failed – reassigned")
-          ),
-          makeMemoBtn(
-            "No Parking",
-            "Parking requested as per sender, but none available",
-            () => insertAtCursor(memo, "Parking requested as per sender, but none available")
-          ),
-          makeMemoBtn(
-            "Part. Parking",
-            "Parking requested as per sender; not available for full stay – added for available days only",
-            () => insertAtCursor(memo, "Parking requested as per sender; not available for full stay – added for available days only")
           )
+          // Switched off (owner, 2026-10-20): the parking and room-fixed buttons. Uncomment to bring one back.
+          /*
+          makeMemoBtn('Parking',        'Parking added as per sender',
+            () => insertAtCursor(memo, 'Parking added as per sender')),
+          makeMemoBtn('Room Fixed',     'Room allocation failed – reassigned',
+            () => insertAtCursor(memo, 'Room allocation failed – reassigned')),
+          makeMemoBtn('No Parking',     'Parking requested as per sender, but none available',
+            () => insertAtCursor(memo, 'Parking requested as per sender, but none available')),
+          makeMemoBtn('Part. Parking',  'Parking requested as per sender; not available for full stay – added for available days only',
+            () => insertAtCursor(memo, 'Parking requested as per sender; not available for full stay – added for available days only')),
+          */
         ], wrapper = document.createElement("span");
         wrapper.style.cssText = "display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px; vertical-align: top; margin-left: -70px; margin-top: 10px;", buttons.forEach((btn) => wrapper.appendChild(btn));
         let pickerBtn = dialog.querySelector('a.cmd_button.picker[field="memo"]'), anchor = pickerBtn || memo;
