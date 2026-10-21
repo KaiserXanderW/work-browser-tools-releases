@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Work Browser Tools
 // @namespace    https://github.com/KaiserXanderW/work-browser-tools-releases
-// @version      1.1.0
+// @version      1.1.1
 // @description  Work browser tools in one Violentmonkey entry. Menu: "Tools on this page…" switches single tools off.
 // @match        https://*.assd.com/*
 // @match        https://*.assd.com:9443/*
@@ -3955,16 +3955,18 @@ ${response.responseText}`, elements.output.textContent = errorMsg, console.error
   }
 
   // bundle/monitor-panel.js
-  var POLL = "work-browser-tools.monitor.poll", REPLY = "work-browser-tools.monitor.reply", RESET = "work-browser-tools.monitor.reset", WAIT_MS = 400, REFRESH_MS = 2e3, TICK_MS = 500;
+  var POLL = "work-browser-tools.monitor.poll", REPLY = "work-browser-tools.monitor.reply", RESET = "work-browser-tools.monitor.reset", WAIT_MS = 400, REFRESH_MS = 2e3, COLLAPSED_REFRESH_MS = 1e4, TICK_MS = 500;
   function frameName(win, href) {
     let path;
     try {
-      path = new URL(href).pathname;
+      path = new URL(href).pathname.replace(/;[^/]*/g, "").replace(/\d{4,}/g, "#");
     } catch {
       path = "?";
     }
     let own = String(win.location.href);
-    return /^(about|blob|data):/i.test(own) ? `${path} (${own.split(/[?#]/)[0]} frame)` : path;
+    if (!/^(about|blob|data):/i.test(own)) return path;
+    let kind = /^about:/i.test(own) ? own.split(/[?#]/)[0] : own.split(":")[0].toLowerCase();
+    return `${path} (${kind} frame)`;
   }
   function installResponder(win, state, href) {
     let frame = frameName(win, href);
@@ -4069,7 +4071,14 @@ table{border-collapse:collapse;margin:8px 0;font-variant-numeric:tabular-nums}
 th,td{padding:3px 8px;text-align:right;border-bottom:1px solid #e5e7eb;white-space:nowrap}
 th:first-child,td:first-child{text-align:left}tr.total td{font-weight:600;border-top:2px solid #d1d5db}
 .row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
-button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;background:#f9fafb;cursor:pointer}`;
+button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;background:#f9fafb;cursor:pointer}
+.pill{position:fixed;top:16px;right:16px;z-index:2147483647;font:12px/1.4 system-ui,sans-serif;color:#fff;
+  background:#1f2937;border:0;border-radius:999px;padding:4px 12px;box-shadow:0 4px 12px rgba(0,0,0,.25)}
+[hidden]{display:none!important}`;
+  function pillText(sum, lag) {
+    let page = lag.n ? `page +${fmt(lag.sum / lag.n, 1)} ms` : "page …";
+    return `Tools ${fmt(sum.total.msPerMin, 1)} ms/min · ${page}`;
+  }
   function openMonitor(win, tools) {
     let doc = win.document, labels = Object.fromEntries(tools.map((t) => [t.id, t.label]));
     labels[OTHER] = OTHER;
@@ -4088,12 +4097,15 @@ button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;
       let b = el("button", text);
       return b.addEventListener("click", fn), buttons.append(b), b;
     };
-    box.append(el("h2", "Work Browser Tools: resources"), head, table, page, note, buttons), root.append(style, box);
+    box.append(el("h2", "Work Browser Tools: resources"), head, table, page, note, buttons);
+    let pill = el("button");
+    pill.className = "pill", pill.title = "Work Browser Tools resource monitor: still measuring. Click to expand.", pill.hidden = !0, root.append(style, box, pill);
     let lag = { n: 0, sum: 0, max: 0 }, expected = win.performance.now() + TICK_MS, tick = native.setInterval.call(globalThis, () => {
       let t = win.performance.now(), late = Math.max(0, t - expected);
-      lag.n += 1, lag.sum += late, lag.max = Math.max(lag.max, late), expected = t + TICK_MS;
-    }, TICK_MS), last = { sum: summarize([], labels), replies: [] }, refresh = 0, closed = !1, render = () => {
+      lag.n += 1, lag.sum += late, lag.max = Math.max(lag.max, late), expected = t + TICK_MS, collapsed && (pill.textContent = pillText(last.sum, lag));
+    }, TICK_MS), last = { sum: summarize([], labels), replies: [] }, refresh = 0, closed = !1, collapsed = !1, gen = 0, render = () => {
       let { sum } = last;
+      if (pill.textContent = pillText(sum, lag), collapsed) return;
       head.textContent = `${fmt(sum.minutes, 1)} min counted (since the page loaded or Reset), ${sum.frames} frames answering.`, table.replaceChildren();
       let tr = (cells, cls, tag = "td") => {
         let r = el("tr");
@@ -4105,9 +4117,13 @@ button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;
       for (let r of sum.rows) tr(COLUMNS.map(([, f]) => f(r)));
       tr(COLUMNS.map(([, f]) => f(sum.total)), "total"), page.textContent = lagText(lag);
     }, update = async () => {
-      let replies = await collect(win);
-      closed || (last = { sum: summarize(replies, labels), replies }, render(), refresh = native.setTimeout.call(globalThis, update, REFRESH_MS));
-    }, close = () => {
+      let g = gen, replies = await collect(win);
+      closed || g !== gen || (last = { sum: summarize(replies, labels), replies }, render(), refresh = native.setTimeout.call(globalThis, update, collapsed ? COLLAPSED_REFRESH_MS : REFRESH_MS));
+    }, setCollapsed = (on) => {
+      collapsed = on, box.hidden = on, pill.hidden = !on, render(), on || (gen += 1, native.clearTimeout.call(globalThis, refresh), update());
+    };
+    pill.addEventListener("click", () => setCollapsed(!1));
+    let close = () => {
       closed = !0, native.clearTimeout.call(globalThis, refresh), native.clearInterval.call(globalThis, tick), host.remove();
     };
     return mk("Reset", () => {
@@ -4115,7 +4131,7 @@ button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;
     }), mk("Copy", () => {
       let text = asText(last.sum, last.replies, lag, labels);
       typeof GM_setClipboard == "function" ? GM_setClipboard(text, "text") : win.navigator.clipboard?.writeText(text);
-    }), mk("Close", close), render(), (doc.body || doc.documentElement).append(host), update(), { root, close };
+    }), mk("Collapse", () => setCollapsed(!0)), mk("Close", close), render(), (doc.body || doc.documentElement).append(host), update(), { root, close, collapse: () => setCollapsed(!0), expand: () => setCollapsed(!1) };
   }
 
   // bundle/loader.js
