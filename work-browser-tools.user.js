@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Work Browser Tools
 // @namespace    https://github.com/KaiserXanderW/work-browser-tools-releases
-// @version      1.1.1
+// @version      1.2.0
 // @description  Work browser tools in one Violentmonkey entry. Menu: "Tools on this page…" switches single tools off.
 // @match        https://*.assd.com/*
 // @match        https://*.assd.com:9443/*
@@ -30,6 +30,7 @@
 // @downloadURL  https://raw.githubusercontent.com/KaiserXanderW/work-browser-tools-releases/main/work-browser-tools.user.js
 // ==/UserScript==
 
+var __wbtT0 = typeof performance === "object" ? performance.now() : 0;
 (() => {
   // bundle/monitor.js
   var OTHER = "(outside a tool)", G = globalThis, now = () => G.performance.now(), native = {
@@ -3954,8 +3955,188 @@ ${response.responseText}`, elements.output.textContent = errorMsg, console.error
     return (url) => tests.some((t) => t(url));
   }
 
+  // bundle/page-watch.js
+  var KEEP_S = 300, SLOW_INPUT_MS = 104;
+  function safePath(url, ownOrigin) {
+    let u;
+    try {
+      u = new URL(url);
+    } catch {
+      return "?";
+    }
+    let path = u.pathname.replace(/;[^/]*/g, "").replace(/\d{4,}/g, "#");
+    return ownOrigin && u.origin !== ownOrigin ? `${path} (other site)` : path;
+  }
+  var on = null;
+  function startWatch(win = globalThis) {
+    if (on) return;
+    let doc = win.document, origin = win.location.origin, w = {
+      since: Date.now(),
+      changes: 0,
+      requests: 0,
+      bytes: 0,
+      slowInputs: 0,
+      slowestInputMs: 0,
+      inputs: /* @__PURE__ */ new Map(),
+      paths: /* @__PURE__ */ new Map(),
+      seconds: /* @__PURE__ */ new Map(),
+      stop: []
+    }, sec = () => {
+      let s = Math.floor(Date.now() / 1e3), b = w.seconds.get(s);
+      if (!b) {
+        b = { c: 0, r: 0 }, w.seconds.set(s, b);
+        for (let k of w.seconds.keys()) {
+          if (k > s - KEEP_S) break;
+          w.seconds.delete(k);
+        }
+      }
+      return b;
+    }, mo = new native.MutationObserver((records) => {
+      w.changes += records.length, sec().c += records.length;
+    });
+    mo.observe(doc.documentElement, { childList: !0, subtree: !0, attributes: !0, characterData: !0 }), w.stop.push(() => mo.disconnect());
+    let PO = win.PerformanceObserver, types = PO?.supportedEntryTypes ?? [];
+    if (types.includes("resource")) {
+      let po = new PO((list) => {
+        for (let e of list.getEntries()) {
+          w.requests += 1, w.bytes += e.transferSize || 0, sec().r += 1;
+          let key = `${safePath(e.name, origin)} [${e.initiatorType || "?"}]`, p = w.paths.get(key) ?? { n: 0, bytes: 0 };
+          p.n += 1, p.bytes += e.transferSize || 0, w.paths.set(key, p);
+        }
+      });
+      po.observe({ type: "resource" }), w.stop.push(() => po.disconnect());
+    }
+    if (types.includes("event")) {
+      let po = new PO((list) => {
+        for (let e of list.getEntries())
+          w.slowInputs += 1, w.slowestInputMs = Math.max(w.slowestInputMs, e.duration), w.inputs.set(e.name, (w.inputs.get(e.name) ?? 0) + 1);
+      });
+      po.observe({ type: "event", durationThreshold: SLOW_INPUT_MS }), w.stop.push(() => po.disconnect());
+    }
+    on = w;
+  }
+  function stopWatch() {
+    if (on) {
+      for (let f of on.stop) f();
+      on = null;
+    }
+  }
+  function pageSnapshot(win = globalThis) {
+    if (!on) return null;
+    let elements = 0;
+    try {
+      elements = win.document.getElementsByTagName("*").length;
+    } catch {
+    }
+    return {
+      since: on.since,
+      changes: on.changes,
+      requests: on.requests,
+      bytes: on.bytes,
+      elements,
+      slowInputs: on.slowInputs,
+      slowestInputMs: on.slowestInputMs,
+      inputs: Object.fromEntries(on.inputs),
+      paths: Object.fromEntries(on.paths),
+      seconds: [...on.seconds].map(([s, b]) => [s, b.c, b.r])
+    };
+  }
+
+  // bundle/page-report.js
+  var fmt = (n, d = 0) => Number.isFinite(n) ? n.toFixed(d) : "–", perMin = (n, ms) => n / (Math.max(ms, 1e3) / 6e4);
+  function summarizeLoads(loads2, fromMs, nowMs) {
+    let list = loads2.filter((l) => l.t >= fromMs), boot2 = list.map((l) => l.bootMs).filter((x) => Number.isFinite(x)), byFrame = /* @__PURE__ */ new Map();
+    for (let l of list) byFrame.set(l.frame, (byFrame.get(l.frame) ?? 0) + 1);
+    return {
+      n: list.length,
+      perMin: perMin(list.length, nowMs - fromMs),
+      avgBootMs: boot2.length ? boot2.reduce((a, b) => a + b, 0) / boot2.length : NaN,
+      maxBootMs: boot2.length ? Math.max(...boot2) : NaN,
+      byFrame
+    };
+  }
+  function summarizePage(replies, loads2, stalls2, nowMs) {
+    let frames2 = /* @__PURE__ */ new Map(), paths = /* @__PURE__ */ new Map(), inputs = /* @__PURE__ */ new Map(), since2 = nowMs;
+    for (let r of replies) {
+      let p = r.page;
+      if (!p) continue;
+      since2 = Math.min(since2, p.since);
+      let ms = nowMs - p.since, f = frames2.get(r.frame) ?? { frame: r.frame, loads: 0, changesPerMin: 0, elements: 0, requestsPerMin: 0, kbPerMin: 0, slowInputs: 0, seconds: [] };
+      f.changesPerMin += perMin(p.changes, ms), f.requestsPerMin += perMin(p.requests, ms), f.kbPerMin += perMin(p.bytes / 1024, ms), f.elements += p.elements, f.slowInputs += p.slowInputs, f.seconds.push(...p.seconds), frames2.set(r.frame, f);
+      for (let [k, v] of Object.entries(p.paths)) {
+        let q = paths.get(k) ?? { path: k, perMin: 0, kbPerMin: 0 };
+        q.perMin += perMin(v.n, ms), q.kbPerMin += perMin(v.bytes / 1024, ms), paths.set(k, q);
+      }
+      for (let [k, v] of Object.entries(p.inputs)) inputs.set(k, (inputs.get(k) ?? 0) + v);
+    }
+    let l = summarizeLoads(loads2, since2, nowMs);
+    for (let f of frames2.values()) f.loads = l.byFrame.get(f.frame) ?? 0;
+    let slowest = Math.max(0, ...replies.map((r) => r.page?.slowestInputMs ?? 0));
+    return {
+      since: since2,
+      frames: [...frames2.values()].sort((a, b) => b.changesPerMin - a.changesPerMin || b.requestsPerMin - a.requestsPerMin),
+      paths: [...paths.values()].sort((a, b) => b.perMin - a.perMin).slice(0, 10),
+      inputs: [...inputs].sort((a, b) => b[1] - a[1]),
+      slowestInputMs: slowest,
+      stalls: stalls2.filter((s) => s.end >= since2).map((s) => ({ ...s, before: busiestBefore(s, [...frames2.values()], loads2) }))
+    };
+  }
+  function busiestBefore(stall, frames2, loads2) {
+    let from = Math.floor((stall.end - stall.ms) / 1e3) - 2, to = Math.floor(stall.end / 1e3), best = null;
+    for (let f of frames2) {
+      let c = 0, r = 0;
+      for (let [s, bc, br] of f.seconds) s >= from && s <= to && (c += bc, r += br);
+      c + r > 0 && (!best || c + r * 50 > best.changes + best.requests * 50) && (best = { frame: f.frame, changes: c, requests: r });
+    }
+    let reloads = [...new Set(loads2.filter((x) => x.t >= from * 1e3 && x.t <= stall.end).map((x) => x.frame))];
+    return { busiest: best, reloads };
+  }
+  function clock(ms) {
+    let d = new Date(ms);
+    return [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
+  }
+  function stallText(s) {
+    let b = s.before, busy2 = b.busiest ? `most page activity just before: ${b.busiest.frame} (${b.busiest.changes} changes, ${b.busiest.requests} requests)` : "no page changes or requests just before", re = b.reloads.length ? `; frames (re)loaded: ${b.reloads.join(", ")}` : "";
+    return `${clock(s.end - s.ms)} · ${fmt(s.ms)} ms · ${busy2}${re}`;
+  }
+  var FRAME_COLUMNS = [
+    ["Frame", (f) => f.frame],
+    ["Loads", (f) => String(f.loads)],
+    ["Changes/min", (f) => fmt(f.changesPerMin)],
+    ["Elements", (f) => String(f.elements)],
+    ["Requests/min", (f) => fmt(f.requestsPerMin, 1)],
+    ["KB/min", (f) => fmt(f.kbPerMin, 1)],
+    ["Slow inputs", (f) => String(f.slowInputs)]
+  ], PATH_COLUMNS = [
+    ["Request (path)", (p) => p.path],
+    ["Per min", (p) => fmt(p.perMin, 1)],
+    ["KB/min", (p) => fmt(p.kbPerMin, 1)]
+  ];
+  function inputText(page) {
+    return page.inputs.length ? `Slow inputs (key/click handling over 100 ms): ${page.inputs.map(([k, n]) => `${k} ${n}×`).join(", ")}; slowest ${fmt(page.slowestInputMs)} ms` : "Slow inputs (key/click handling over 100 ms): none";
+  }
+  function pageText(page, nowMs) {
+    let row = (cols, x) => cols.map(([, f]) => f(x)).join("	");
+    return [
+      `Page — watched for ${fmt((nowMs - page.since) / 6e4, 1)} min`,
+      `Stalls over 200 ms: ${page.stalls.length}`,
+      ...page.stalls.map(stallText),
+      "",
+      FRAME_COLUMNS.map(([h]) => h).join("	"),
+      ...page.frames.map((f) => row(FRAME_COLUMNS, f)),
+      "",
+      PATH_COLUMNS.map(([h]) => h).join("	"),
+      ...page.paths.map((p) => row(PATH_COLUMNS, p)),
+      "",
+      inputText(page)
+    ].join(`
+`);
+  }
+
   // bundle/monitor-panel.js
-  var POLL = "work-browser-tools.monitor.poll", REPLY = "work-browser-tools.monitor.reply", RESET = "work-browser-tools.monitor.reset", WAIT_MS = 400, REFRESH_MS = 2e3, COLLAPSED_REFRESH_MS = 1e4, TICK_MS = 500;
+  var POLL = "work-browser-tools.monitor.poll", REPLY = "work-browser-tools.monitor.reply", RESET = "work-browser-tools.monitor.reset", BOOTED = "work-browser-tools.monitor.booted", WATCH = "work-browser-tools.monitor.watch", KEEP = 2e3, loads = [], stalls = [], watchOn = !1, keep = (list, x) => {
+    list.push(x), list.length > KEEP && list.splice(0, list.length - KEEP);
+  }, WAIT_MS = 400, REFRESH_MS = 2e3, COLLAPSED_REFRESH_MS = 1e4, TICK_MS = 500;
   function frameName(win, href) {
     let path;
     try {
@@ -3968,12 +4149,39 @@ ${response.responseText}`, elements.output.textContent = errorMsg, console.error
     let kind = /^about:/i.test(own) ? own.split(/[?#]/)[0] : own.split(":")[0].toLowerCase();
     return `${path} (${kind} frame)`;
   }
-  function installResponder(win, state, href) {
-    let frame = frameName(win, href);
+  function installResponder(win, state, href, bootMs2 = NaN) {
+    let frame = frameName(win, href), isTop = win === win.top;
+    if (isTop) keep(loads, { frame, t: Date.now(), bootMs: bootMs2 });
+    else
+      try {
+        win.top.postMessage({ type: BOOTED, frame, bootMs: bootMs2 }, "*");
+      } catch {
+      }
     win.addEventListener("message", (e) => {
       let d = e.data;
-      !d || typeof d != "object" || (d.type === RESET && reset(), !(d.type !== POLL || !e.source) && e.source.postMessage({ type: REPLY, id: d.id, frame, started: [...state.started], ...snapshot() }, "*"));
+      if (!(!d || typeof d != "object")) {
+        if (d.type === RESET && reset(), d.type === WATCH) {
+          d.on ? startWatch(win) : stopWatch();
+          return;
+        }
+        if (d.type === BOOTED && isTop) {
+          keep(loads, { frame: String(d.frame), t: Date.now(), bootMs: Number(d.bootMs) }), watchOn && e.source && e.source.postMessage({ type: WATCH, on: !0 }, "*");
+          return;
+        }
+        d.type !== POLL || !e.source || e.source.postMessage({ type: REPLY, id: d.id, frame, started: [...state.started], bootMs: bootMs2, page: pageSnapshot(win), ...snapshot() }, "*");
+      }
     });
+  }
+  function broadcastWatch(win, on2) {
+    watchOn = on2;
+    for (let w of allFrames2(win.top))
+      try {
+        w.postMessage({ type: WATCH, on: on2 }, "*");
+      } catch {
+      }
+  }
+  function startsText(l) {
+    return l.n ? `Bundle starts (a frame loading a document runs the bundle again): ${l.n}, ${fmt2(l.perMin, 1)}/min; start-up ${fmt2(l.avgBootMs, 1)} ms on average, at worst ${fmt2(l.maxBootMs, 1)} ms (not counting parse time)` : "Bundle starts: none yet";
   }
   function allFrames2(top) {
     let out = [], walk = (w, depth) => {
@@ -4032,36 +4240,37 @@ ${response.responseText}`, elements.output.textContent = errorMsg, console.error
     }
     return { rows, total, minutes: longest / 6e4, frames: replies.length };
   }
-  var fmt = (n, d = 0) => Number.isFinite(n) ? n.toFixed(d) : "–", busy = (msPerMin) => `${fmt(msPerMin / 600, 2)} %`, COLUMNS = [
+  var fmt2 = (n, d = 0) => Number.isFinite(n) ? n.toFixed(d) : "–", busy = (msPerMin) => `${fmt2(msPerMin / 600, 2)} %`, COLUMNS = [
     ["Tool", (r) => r.label],
     ["Frames", (r) => String(r.frames)],
-    ["Callbacks/min", (r) => fmt(r.perMin)],
-    ["Busy ms/min", (r) => fmt(r.msPerMin, 1)],
+    ["Callbacks/min", (r) => fmt2(r.perMin)],
+    ["Busy ms/min", (r) => fmt2(r.msPerMin, 1)],
     ["Busy", (r) => busy(r.msPerMin)],
-    ["Slowest ms", (r) => fmt(r.maxMs, 1)],
+    ["Slowest ms", (r) => fmt2(r.maxMs, 1)],
     ["Observers", (r) => String(r.observers)],
     ["Intervals", (r) => String(r.intervals)],
     ["Timers", (r) => String(r.timers)]
   ];
-  function asText(sum, replies, lag, labels = {}) {
+  function asText(sum, replies, lag, labels = {}, extra = []) {
     let line = (r) => COLUMNS.map(([, f]) => f(r)).join("	"), out = [
-      `Work Browser Tools resource monitor — ${fmt(sum.minutes, 1)} min counted, ${sum.frames} frames`,
+      `Work Browser Tools resource monitor — ${fmt2(sum.minutes, 1)} min counted, ${sum.frames} frames`,
       COLUMNS.map(([h]) => h).join("	"),
       ...sum.rows.map(line),
       line(sum.total),
       lagText(lag),
+      ...extra,
       "",
       "By frame:"
     ];
     for (let r of replies) {
       let s = summarize([r], labels);
-      out.push(`${r.frame}: ${fmt(s.total.msPerMin, 1)} ms/min, ${fmt(s.total.perMin)} callbacks/min, ${s.total.observers} observers; started: ${r.started.join(", ") || "none"}`);
+      out.push(`${r.frame}: ${fmt2(s.total.msPerMin, 1)} ms/min, ${fmt2(s.total.perMin)} callbacks/min, ${s.total.observers} observers; started: ${r.started.join(", ") || "none"}`);
     }
     return out.join(`
 `);
   }
   function lagText(lag) {
-    return lag.n ? `Page: a ${TICK_MS} ms timer fires on average ${fmt(lag.sum / lag.n, 1)} ms late, at worst ${fmt(lag.max)} ms (${lag.n} ticks while open)` : "Page: measuring…";
+    return lag.n ? `Page: a ${TICK_MS} ms timer fires on average ${fmt2(lag.sum / lag.n, 1)} ms late, at worst ${fmt2(lag.max)} ms (${lag.n} ticks while open)` : "Page: measuring…";
   }
   var CSS = `.box{position:fixed;top:16px;right:16px;z-index:2147483647;background:#fff;color:#1f2937;
   font:12px/1.4 system-ui,sans-serif;border:1px solid #d1d5db;border-radius:8px;
@@ -4075,9 +4284,9 @@ button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;
 .pill{position:fixed;top:16px;right:16px;z-index:2147483647;font:12px/1.4 system-ui,sans-serif;color:#fff;
   background:#1f2937;border:0;border-radius:999px;padding:4px 12px;box-shadow:0 4px 12px rgba(0,0,0,.25)}
 [hidden]{display:none!important}`;
-  function pillText(sum, lag) {
-    let page = lag.n ? `page +${fmt(lag.sum / lag.n, 1)} ms` : "page …";
-    return `Tools ${fmt(sum.total.msPerMin, 1)} ms/min · ${page}`;
+  function pillText(sum, lag, nStalls = null) {
+    let page = lag.n ? `page +${fmt2(lag.sum / lag.n, 1)} ms` : "page …";
+    return `Tools ${fmt2(sum.total.msPerMin, 1)} ms/min · ${page}${nStalls == null ? "" : ` · ${nStalls} stalls`}`;
   }
   function openMonitor(win, tools) {
     let doc = win.document, labels = Object.fromEntries(tools.map((t) => [t.id, t.label]));
@@ -4091,22 +4300,39 @@ button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;
     host.id = "work-browser-tools-monitor";
     let root = host.attachShadow({ mode: "open" }), style = el("style", CSS), box = el("div");
     box.className = "box", box.setAttribute("role", "dialog"), box.setAttribute("aria-label", "Work Browser Tools resource monitor");
-    let head = el("p"), table = el("table"), page = el("p"), note = el("p", "Counts timers and page-change observers per tool, in every frame. Key and click handlers are not counted. Firefox times in whole milliseconds: one short callback reads 0 or 1 ms, but the totals add up."), buttons = el("div");
+    let head = el("p"), table = el("table"), page = el("p"), starts = el("p"), pageBox = el("div");
+    pageBox.hidden = !0;
+    let pageHead = el("h2", "The page"), pageInfo = el("p"), stallBox = el("div"), frameTable = el("table"), pathTable = el("table"), inputsP = el("p");
+    pageBox.append(pageHead, pageInfo, stallBox, frameTable, pathTable, inputsP);
+    let note = el("p", "Counts timers and page-change observers per tool, in every frame. Key and click handlers are not counted. Firefox times in whole milliseconds: one short callback reads 0 or 1 ms, but the totals add up."), buttons = el("div");
     buttons.className = "row";
     let mk = (text, fn) => {
       let b = el("button", text);
       return b.addEventListener("click", fn), buttons.append(b), b;
     };
-    box.append(el("h2", "Work Browser Tools: resources"), head, table, page, note, buttons);
+    box.append(el("h2", "Work Browser Tools: resources"), head, table, page, starts, pageBox, note, buttons);
     let pill = el("button");
     pill.className = "pill", pill.title = "Work Browser Tools resource monitor: still measuring. Click to expand.", pill.hidden = !0, root.append(style, box, pill);
     let lag = { n: 0, sum: 0, max: 0 }, expected = win.performance.now() + TICK_MS, tick = native.setInterval.call(globalThis, () => {
       let t = win.performance.now(), late = Math.max(0, t - expected);
-      lag.n += 1, lag.sum += late, lag.max = Math.max(lag.max, late), expected = t + TICK_MS, collapsed && (pill.textContent = pillText(last.sum, lag));
-    }, TICK_MS), last = { sum: summarize([], labels), replies: [] }, refresh = 0, closed = !1, collapsed = !1, gen = 0, render = () => {
+      lag.n += 1, lag.sum += late, lag.max = Math.max(lag.max, late), late > 200 && keep(stalls, { end: Date.now(), ms: late }), expected = t + TICK_MS, collapsed && (pill.textContent = pillText(last.sum, lag, watching ? stallsSince().length : null));
+    }, TICK_MS), last = { sum: summarize([], labels), replies: [] }, refresh = 0, closed = !1, collapsed = !1, gen = 0, watching = !1, countFrom = Math.round(win.performance.timeOrigin || Date.now()), stallsSince = () => stalls.filter((x) => x.end >= countFrom), tableOf = (t, cols, rows) => {
+      t.replaceChildren();
+      let tr = (cells, tag) => {
+        let r = el("tr");
+        for (let c of cells) r.append(el(tag, c));
+        t.append(r);
+      };
+      tr(cols.map(([h]) => h), "th");
+      for (let x of rows) tr(cols.map(([, f]) => f(x)), "td");
+    }, pageNow = () => summarizePage(last.replies, loads.filter((x) => x.t >= countFrom), stallsSince(), Date.now()), render = () => {
       let { sum } = last;
-      if (pill.textContent = pillText(sum, lag), collapsed) return;
-      head.textContent = `${fmt(sum.minutes, 1)} min counted (since the page loaded or Reset), ${sum.frames} frames answering.`, table.replaceChildren();
+      if (pill.textContent = pillText(sum, lag, watching ? stallsSince().length : null), collapsed) return;
+      if (starts.textContent = startsText(summarizeLoads(loads, countFrom, Date.now())), pageBox.hidden = !watching, watching) {
+        let ps = pageNow();
+        pageInfo.textContent = `Watched for ${fmt2((Date.now() - ps.since) / 6e4, 1)} min. Stalls (the page blocked for over ${200} ms): ${ps.stalls.length}. Each is matched to the frame with the most page changes and requests just before it: a lead, not proof. Script that changes nothing (a busy loop) only shows in the Firefox Profiler. Latest:`, stallBox.replaceChildren(...ps.stalls.slice(-8).reverse().map((x) => el("p", stallText(x)))), tableOf(frameTable, FRAME_COLUMNS, ps.frames.slice(0, 12)), tableOf(pathTable, PATH_COLUMNS, ps.paths), inputsP.textContent = inputText(ps);
+      }
+      head.textContent = `${fmt2(sum.minutes, 1)} min counted (since the page loaded or Reset), ${sum.frames} frames answering.`, table.replaceChildren();
       let tr = (cells, cls, tag = "td") => {
         let r = el("tr");
         cls && (r.className = cls);
@@ -4119,19 +4345,25 @@ button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;
     }, update = async () => {
       let g = gen, replies = await collect(win);
       closed || g !== gen || (last = { sum: summarize(replies, labels), replies }, render(), refresh = native.setTimeout.call(globalThis, update, collapsed ? COLLAPSED_REFRESH_MS : REFRESH_MS));
-    }, setCollapsed = (on) => {
-      collapsed = on, box.hidden = on, pill.hidden = !on, render(), on || (gen += 1, native.clearTimeout.call(globalThis, refresh), update());
+    }, setCollapsed = (on2) => {
+      collapsed = on2, box.hidden = on2, pill.hidden = !on2, render(), on2 || (gen += 1, native.clearTimeout.call(globalThis, refresh), update());
     };
     pill.addEventListener("click", () => setCollapsed(!1));
     let close = () => {
-      closed = !0, native.clearTimeout.call(globalThis, refresh), native.clearInterval.call(globalThis, tick), host.remove();
+      closed = !0, watching && broadcastWatch(win, !1), native.clearTimeout.call(globalThis, refresh), native.clearInterval.call(globalThis, tick), host.remove();
     };
-    return mk("Reset", () => {
-      broadcastReset(win), lag.n = 0, lag.sum = 0, lag.max = 0;
-    }), mk("Copy", () => {
-      let text = asText(last.sum, last.replies, lag, labels);
+    mk("Reset", () => {
+      broadcastReset(win), lag.n = 0, lag.sum = 0, lag.max = 0, countFrom = Date.now();
+    });
+    let watchBtn = mk("Watch the page", () => {
+      watching = !watching, broadcastWatch(win, watching), watchBtn.textContent = watching ? "Stop watching" : "Watch the page", render();
+    });
+    return mk("Copy", () => {
+      let extra = [startsText(summarizeLoads(loads, countFrom, Date.now()))];
+      watching && extra.push("", pageText(pageNow(), Date.now()));
+      let text = asText(last.sum, last.replies, lag, labels, extra);
       typeof GM_setClipboard == "function" ? GM_setClipboard(text, "text") : win.navigator.clipboard?.writeText(text);
-    }), mk("Collapse", () => setCollapsed(!0)), mk("Close", close), render(), (doc.body || doc.documentElement).append(host), update(), { root, close, collapse: () => setCollapsed(!0), expand: () => setCollapsed(!1) };
+    }), mk("Collapse", () => setCollapsed(!0)), mk("Close", close), render(), (doc.body || doc.documentElement).append(host), update(), { root, close, collapse: () => setCollapsed(!0), expand: () => setCollapsed(!1), watch: () => watchBtn.click() };
   }
 
   // bundle/loader.js
@@ -4186,11 +4418,12 @@ button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;
     }
     return win.location.href;
   }
+  var bootMs = () => typeof __wbtT0 == "number" ? globalThis.performance.now() - __wbtT0 : NaN;
   function boot(tools, gm, win = window) {
     let isTop = win === win.top, disabled = readDisabled(gm), p = plan(tools, { href: pageHref(win), isTop, disabled }), state = { matched: p.matched.map((t) => t.id), started: [], failed: [], switchedOff: p.switchedOff.map((t) => t.id) };
     Object.defineProperty(globalThis, "__workBrowserTools", { value: state, configurable: !0 });
     for (let t of p.toStart) whenTiming(t.timing, () => runTool(t, state), win.document, win);
-    return p.matched.length && installResponder(win, state, pageHref(win)), isTop && p.matched.length && (gm.registerMenuCommand("Tools on this page…", () => openSwitchboard(p.matched, gm, win)), gm.registerMenuCommand("Resource monitor…", () => openMonitor(win, tools))), p.switchedOff.length && console.info(LOG3, "switched off here:", state.switchedOff.join(", ")), state;
+    return p.matched.length && installResponder(win, state, pageHref(win), bootMs()), isTop && p.matched.length && (gm.registerMenuCommand("Tools on this page…", () => openSwitchboard(p.matched, gm, win)), gm.registerMenuCommand("Resource monitor…", () => openMonitor(win, tools))), p.switchedOff.length && console.info(LOG3, "switched off here:", state.switchedOff.join(", ")), state;
   }
   function readDisabled(gm) {
     let v = gm.getValue(DISABLED_KEY, []);
