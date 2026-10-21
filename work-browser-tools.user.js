@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Work Browser Tools
 // @namespace    https://github.com/KaiserXanderW/work-browser-tools-releases
-// @version      1.0.3
+// @version      1.1.0
 // @description  Work browser tools in one Violentmonkey entry. Menu: "Tools on this page…" switches single tools off.
 // @match        https://*.assd.com/*
 // @match        https://*.assd.com:9443/*
@@ -31,6 +31,93 @@
 // ==/UserScript==
 
 (() => {
+  // bundle/monitor.js
+  var OTHER = "(outside a tool)", G = globalThis, now = () => G.performance.now(), native = {
+    setTimeout: G.setTimeout,
+    clearTimeout: G.clearTimeout,
+    setInterval: G.setInterval,
+    clearInterval: G.clearInterval,
+    requestAnimationFrame: G.requestAnimationFrame,
+    cancelAnimationFrame: G.cancelAnimationFrame,
+    MutationObserver: G.MutationObserver
+  }, started = now(), stats = /* @__PURE__ */ new Map(), active = null;
+  function entry(id) {
+    let key = id ?? OTHER, s = stats.get(key);
+    return s || (s = { calls: 0, ms: 0, maxMs: 0, records: 0, observers: 0, intervals: 0, timers: 0 }, stats.set(key, s)), s;
+  }
+  function runAs(id, fn, ...args) {
+    let prev = active;
+    active = id;
+    let t = now();
+    try {
+      return fn(...args);
+    } finally {
+      let ms = now() - t;
+      active = prev;
+      let s = entry(id);
+      s.calls += 1, s.ms += ms, ms > s.maxMs && (s.maxMs = ms);
+    }
+  }
+  function snapshot() {
+    let tools = {};
+    for (let [id, s] of stats) tools[id] = { ...s };
+    return { elapsedMs: now() - since, tools };
+  }
+  var since = started;
+  function reset() {
+    let next = /* @__PURE__ */ new Map();
+    for (let [id, s] of stats)
+      next.set(id, { calls: 0, ms: 0, maxMs: 0, records: 0, observers: s.observers, intervals: s.intervals, timers: s.timers });
+    stats = next, since = now();
+  }
+  var call = (f, args) => f.apply(G, args), live = /* @__PURE__ */ new Map();
+  function setTimeout(fn, ms, ...rest) {
+    if (typeof fn != "function") return call(native.setTimeout, [fn, ms, ...rest]);
+    let tool = active, id = call(native.setTimeout, [() => {
+      live.delete(id) && (entry(tool).timers -= 1), runAs(tool, fn, ...rest);
+    }, ms]);
+    return live.set(id, [tool, "timers"]), entry(tool).timers += 1, id;
+  }
+  function setInterval(fn, ms, ...rest) {
+    if (typeof fn != "function") return call(native.setInterval, [fn, ms, ...rest]);
+    let tool = active, id = call(native.setInterval, [() => runAs(tool, fn, ...rest), ms]);
+    return live.set(id, [tool, "intervals"]), entry(tool).intervals += 1, id;
+  }
+  function clear(id) {
+    let l = live.get(id);
+    l && (live.delete(id), entry(l[0])[l[1]] -= 1);
+  }
+  function clearTimeout(id) {
+    return clear(id), call(native.clearTimeout, [id]);
+  }
+  function clearInterval(id) {
+    return clear(id), call(native.clearInterval, [id]);
+  }
+  var frames = /* @__PURE__ */ new Map();
+  function requestAnimationFrame(fn) {
+    let tool = active, id = call(native.requestAnimationFrame, [(t) => {
+      frames.delete(id) && (entry(tool).timers -= 1), runAs(tool, fn, t);
+    }]);
+    return frames.set(id, tool), entry(tool).timers += 1, id;
+  }
+  var MutationObserver = class {
+    constructor(cb) {
+      let tool = active;
+      this._tool = tool, this._on = !1, this._mo = new native.MutationObserver((records) => {
+        entry(tool).records += records.length, runAs(tool, cb, records, this);
+      });
+    }
+    observe(target, options) {
+      this._mo.observe(target, options), this._on || (this._on = !0, entry(this._tool).observers += 1);
+    }
+    disconnect() {
+      this._mo.disconnect(), this._on && (this._on = !1, entry(this._tool).observers -= 1);
+    }
+    takeRecords() {
+      return this._mo.takeRecords();
+    }
+  };
+
   // packages/gm/settings.js
   function readSetting(key) {
     let v = GM_getValue(key, "");
@@ -166,12 +253,12 @@
         return readSetting(USER_SETTING.key) || askSetting(USER_SETTING) || "";
       }
       function getMemoDate() {
-        let now = /* @__PURE__ */ new Date(), dd = String(now.getDate()).padStart(2, "0"), mm = String(now.getMonth() + 1).padStart(2, "0"), yy = String(now.getFullYear()).slice(-2);
+        let now2 = /* @__PURE__ */ new Date(), dd = String(now2.getDate()).padStart(2, "0"), mm = String(now2.getMonth() + 1).padStart(2, "0"), yy = String(now2.getFullYear()).slice(-2);
         return `${dd}.${mm}.${yy}`;
       }
       function insertAtCursor(textarea, text, cursorInText = text.length) {
-        let start11 = textarea.selectionStart, end = textarea.selectionEnd;
-        textarea.value = textarea.value.slice(0, start11) + text + textarea.value.slice(end), textarea.setSelectionRange(start11 + cursorInText, start11 + cursorInText), textarea.focus(), textarea.dispatchEvent(new Event("input", { bubbles: !0 })), textarea.dispatchEvent(new Event("change", { bubbles: !0 }));
+        let start12 = textarea.selectionStart, end = textarea.selectionEnd;
+        textarea.value = textarea.value.slice(0, start12) + text + textarea.value.slice(end), textarea.setSelectionRange(start12 + cursorInText, start12 + cursorInText), textarea.focus(), textarea.dispatchEvent(new Event("input", { bubbles: !0 })), textarea.dispatchEvent(new Event("change", { bubbles: !0 }));
       }
       function insertMemoTimestamp(textarea) {
         let user = getUser();
@@ -1300,6 +1387,39 @@ ahi-toast[hidden] { display: none !important; }
     })();
   }
 
+  // scripts/novomind-confirm-delete/src/main.js
+  var LOG = "[work-browser-tools:novomind-confirm-delete]", DELETE_BUTTON = "#mailToolbarBtn_delete", CONFIRM = ".mceWrapper.mceModal.mceConfirm", OK_BUTTON = ".mceButton.mceOk", TEXTS = ["Die Nachricht wurde noch nicht beantwortet", "Nachricht jetzt senden"];
+  function findOk(doc) {
+    for (let modal of doc.querySelectorAll(CONFIRM)) {
+      let text = (modal.querySelector(".mceContent") || modal).textContent || "";
+      if (TEXTS.some((t) => text.includes(t))) {
+        let ok = modal.querySelector(OK_BUTTON);
+        if (ok) return ok;
+      }
+    }
+    return null;
+  }
+  function confirmNext(doc) {
+    let now2 = findOk(doc);
+    if (now2) return void click(now2);
+    let timer = 0, obs = new MutationObserver(() => {
+      let ok = findOk(doc);
+      ok && (stop(), click(ok));
+    }), stop = () => {
+      obs.disconnect(), clearTimeout(timer);
+    };
+    obs.observe(doc.body || doc.documentElement, { childList: !0, subtree: !0 }), timer = setTimeout(stop, 2e3);
+  }
+  function click(ok) {
+    ok.click(), console.info(LOG, "confirmed the delete");
+  }
+  function start5(doc = document) {
+    doc.addEventListener("click", (e) => {
+      let t = e.target;
+      t && typeof t.closest == "function" && t.closest(DELETE_BUTTON) && confirmNext(doc);
+    }, !0);
+  }
+
   // scripts/novomind-email-response-index/src/main.js
   var TEMPLATES_SETTING = {
     key: "templatesUrl",
@@ -1307,7 +1427,7 @@ ahi-toast[hidden] { display: none !important; }
     question: "Address of the templates file (the raw JSON, https://…):",
     check: checkHttpsUrl
   };
-  function start5() {
+  function start6() {
     (function() {
       "use strict";
       let lastFocusedElement = null, lastIframe = null, searchBoxContainer = null, input, ul, highlightedIndex = -1, selectedLanguage = "DE", filteredTemplates = [], templates = [], templatesLoadFailed = !1, selectedIndices = /* @__PURE__ */ new Set(), observer = null, selectedCountDiv = null, selectedSummaryEl = null, selectedNamesEl = null, languageLocked = !1, preF4FieldContent = null, pickerActive = !1, selectedClosingIndex = 0, closings = [], discardTimer = null, searchTimer = null, templatesPromise = null, templatesLoaded = !1, iframeScanScheduled = !1, listenedDocs = /* @__PURE__ */ new WeakSet();
@@ -2186,8 +2306,8 @@ ahi-toast[hidden] { display: none !important; }
   function makeFrameDial(win, opts = {}) {
     let ackMs = opts.ackMs ?? ACK_MS, newId = opts.newId ?? randomId;
     return (number) => new Promise((resolve) => {
-      let frames = allFrames(win);
-      if (!frames.length) {
+      let frames2 = allFrames(win);
+      if (!frames2.length) {
         resolve(!1);
         return;
       }
@@ -2199,7 +2319,7 @@ ahi-toast[hidden] { display: none !important; }
       };
       win.addEventListener("message", onMessage), timer = win.setTimeout(() => done(!1), ackMs);
       let msg = { type: FILL_POST, id, number };
-      for (let f of frames)
+      for (let f of frames2)
         try {
           f.postMessage(msg, "*");
         } catch {
@@ -2318,7 +2438,7 @@ SOURCE 2 — THE CONTACT LIST
 <paste it here, or attach it / name the page>`;
 
   // scripts/novomind-house-contact-index/extension/src/userscript.ts
-  var LOG = "[house-contact-index]";
+  var LOG2 = "[house-contact-index]";
   function pickFile(doc, onFile) {
     doc.getElementById("hci-file-input")?.remove();
     let input = doc.createElement("input");
@@ -2333,7 +2453,7 @@ SOURCE 2 — THE CONTACT LIST
       try {
         text = await readFileText(file);
       } catch (e) {
-        handle?.toast(`Import failed: could not read ${file.name}`, !0), console.warn(LOG, "could not read", file.name, e);
+        handle?.toast(`Import failed: could not read ${file.name}`, !0), console.warn(LOG2, "could not read", file.name, e);
         return;
       }
       let result = await importContacts(storage, text);
@@ -2341,7 +2461,7 @@ SOURCE 2 — THE CONTACT LIST
         handle?.toast(`Import failed: ${result.error}. The previous list is unchanged.`, !0);
         return;
       }
-      for (let w of result.warnings) console.warn(LOG, "import:", w);
+      for (let w of result.warnings) console.warn(LOG2, "import:", w);
       handle?.dataChanged(), handle?.toast(`Imported ${result.data.houses.length} houses` + (result.warnings.length ? ` (${result.warnings.length} warnings, see the console)` : ""));
     }, chooseFile = () => pickFile(document, (f) => {
       importFile(f);
@@ -2533,15 +2653,15 @@ hci-toast[data-show="false"] { display: none !important; }
     }), GM_registerMenuCommand("Reset launcher position", () => {
       handle?.resetPosition();
     }), GM_registerMenuCommand("Restart Script", () => {
-      console.info(LOG, "restarting"), mount().then(() => handle?.toast("House contact index restarted."));
+      console.info(LOG2, "restarting"), mount().then(() => handle?.toast("House contact index restarted."));
     })))();
   }
-  function start6() {
+  function start7() {
     typeof window > "u" || globalThis.__hciUserscript || (globalThis.__hciUserscript = !0, window === window.top ? startTop() : window.addEventListener("message", frameReceiver(window)));
   }
 
   // scripts/novomind-offline-time-tracker/src/main.js
-  function start7() {
+  function start8() {
     (function() {
       "use strict";
       let STORAGE_KEY = "offlineTimePayload", ACTIVE_KEY = "offlineTimeActiveId", FORM_SETTING = {
@@ -2577,8 +2697,8 @@ hci-toast[data-show="false"] { display: none !important; }
         let formUrl = readSetting(FORM_SETTING.key) || askSetting(FORM_SETTING);
         formUrl && (GM_setValue(ACTIVE_KEY, id), window.open(formUrl, "_blank"));
       }
-      function entryLabel(entry) {
-        return entry.date + "  " + entry.startTime + "–" + entry.endTime;
+      function entryLabel(entry2) {
+        return entry2.date + "  " + entry2.startTime + "–" + entry2.endTime;
       }
       function initTracker() {
         if (window !== window.top || document.querySelector("#novomind-offline-tracker-btn")) return;
@@ -2643,12 +2763,12 @@ hci-toast[data-show="false"] { display: none !important; }
         }
         function renderPopup() {
           let entries = getEntries();
-          list.innerHTML = "", entries.forEach(function(entry) {
+          list.innerHTML = "", entries.forEach(function(entry2) {
             let li = document.createElement("li"), label = document.createElement("span");
-            label.textContent = entryLabel(entry), li.appendChild(label), li.appendChild(actionButton("novomind-offline-open", "↗", "Open the form and fill this entry", function() {
-              openFormFor(entry.id);
+            label.textContent = entryLabel(entry2), li.appendChild(label), li.appendChild(actionButton("novomind-offline-open", "↗", "Open the form and fill this entry", function() {
+              openFormFor(entry2.id);
             })), li.appendChild(actionButton("novomind-offline-delete", "✓", "Mark as submitted (removes it)", function() {
-              removeEntry(entry.id), renderPopup();
+              removeEntry(entry2.id), renderPopup();
             })), list.appendChild(li);
           }), popup.style.display = entries.length ? "block" : "none";
         }
@@ -2659,8 +2779,8 @@ hci-toast[data-show="false"] { display: none !important; }
         }
         function stopTracking() {
           clearInterval(timerInterval), timerInterval = null;
-          let endTime = /* @__PURE__ */ new Date(), entry = { id: newId(), date: formatDate(startTime), startTime: formatTime(startTime), endTime: formatTime(endTime) }, entries = getEntries();
-          entries.push(entry), saveEntries(entries), btn.style.background = "#007BFF", btn.textContent = "Start Offline", startTime = null, renderPopup(), openFormFor(entry.id);
+          let endTime = /* @__PURE__ */ new Date(), entry2 = { id: newId(), date: formatDate(startTime), startTime: formatTime(startTime), endTime: formatTime(endTime) }, entries = getEntries();
+          entries.push(entry2), saveEntries(entries), btn.style.background = "#007BFF", btn.textContent = "Start Offline", startTime = null, renderPopup(), openFormFor(entry2.id);
         }
         btn.addEventListener("click", function() {
           startTime ? stopTracking() : startTracking();
@@ -2773,10 +2893,10 @@ hci-toast[data-show="false"] { display: none !important; }
           }
           !allFilled() && Date.now() < fillDeadline && document.querySelector('[data-automation-id="questionItem"]') && fillAvailable();
         });
-        function start11() {
+        function start12() {
           document.body.appendChild(panel), renderStatus(), document.querySelector('[data-automation-id="questionItem"]') && fillAvailable(), observer.observe(document.body, { childList: !0, subtree: !0 });
         }
-        start11();
+        start12();
       }
       location.hostname.includes("novomind") ? initTracker() : FORMS_HOSTS.some(function(h) {
         return location.hostname === h || location.hostname.endsWith("." + h);
@@ -2785,7 +2905,7 @@ hci-toast[data-show="false"] { display: none !important; }
   }
 
   // scripts/novomind-toggle-extra-time/src/main.js
-  function start8() {
+  function start9() {
     (function() {
       "use strict";
       let STORAGE_KEY = "novomind_extra_time_enabled", enabled = localStorage.getItem(STORAGE_KEY) !== "false", lastClickTime = 0, pending = !1;
@@ -2824,7 +2944,7 @@ hci-toast[data-show="false"] { display: none !important; }
   }
 
   // scripts/novomind-update-email-bookingnumber-mybooking/src/main.js
-  function start9() {
+  function start10() {
     (function() {
       "use strict";
       let TRIGGER_SENDER_DOMAIN = "@property.booking.com", BOOKING_NR_REGEX = /(?:Buchungsnummer|Reservierungsnummer|booking\s*(?:number|reference|no\.?)|confirmation\s*(?:number|code))\s*[:\-#]?\s*(\d{6,})/i, CLOSE_BUTTON_SELECTORS = [".mceClose", ".mceOk", ".close", ".mceButton", "a#okBtn"], updateCanceled = !1, popupActive = !1, senderObserver = null, lastSenderHtml = null, senderCheckTimer = null;
@@ -3122,7 +3242,7 @@ hci-toast[data-show="false"] { display: none !important; }
   }
 
   // scripts/reply-forge/src/main.js
-  function start10() {
+  function start11() {
     (function() {
       "use strict";
       if (window.top !== window.self || document.querySelector("#reply-forge")) {
@@ -3645,8 +3765,8 @@ ${response.responseText}`, elements.output.textContent = errorMsg, console.error
                     }) && dupCount <= 10; )
                       dupCount++, finalTitle = title + " (" + dupCount + ")";
                     if (dupCount > 10) {
-                      var now = /* @__PURE__ */ new Date();
-                      finalTitle = title + " (" + now.toISOString().substring(0, 16).replace("T", " ") + ")";
+                      var now2 = /* @__PURE__ */ new Date();
+                      finalTitle = title + " (" + now2.toISOString().substring(0, 16).replace("T", " ") + ")";
                     }
                     var newEntry = {
                       title: finalTitle,
@@ -3795,12 +3915,13 @@ ${response.responseText}`, elements.output.textContent = errorMsg, console.error
     { id: "assd-house-index", label: "House index", match: ["https://*.assd.com/*", "https://botfriendsx.com/project/*/handover/tool/handover"], include: [], timing: "document-end", frames: !1, start: start2 },
     { id: "assd-login", label: "ASSD login", match: [], include: ["/^https:\\/\\/[^\\/]*-[^\\/]*\\.assd\\.com\\//"], timing: "document-end", frames: !0, start: start3 },
     { id: "assd-ocr-assist", label: "ASSD OCR assist", match: ["https://*.assd.com/*", "https://*.assd.com:9443/*"], include: [], timing: "document-start", frames: !0, start: start4 },
-    { id: "novomind-email-response-index", label: "Email templates", match: ["https://*.novomind.com/*"], include: [], timing: "document-end", frames: !0, start: start5 },
-    { id: "novomind-house-contact-index", label: "House contact index", match: ["https://*.novomind.com/*"], include: ["/^https?:\\/\\/[^\\/@]*novomind[^\\/@]*\\//"], timing: "document-end", frames: !0, start: start6 },
-    { id: "novomind-offline-time-tracker", label: "Offline time tracker", match: ["https://*.novomind.com/*", "*://forms.office.com/*", "*://forms.cloud.microsoft/*", "*://forms.microsoft.com/*"], include: [], timing: "document-end", frames: !0, start: start7 },
-    { id: "novomind-toggle-extra-time", label: "Toggle extra time", match: ["https://*.novomind.com/*"], include: [], timing: "document-end", frames: !0, start: start8 },
-    { id: "novomind-update-email-bookingnumber-mybooking", label: "Booking number to MyBooking", match: ["https://*.novomind.com/*"], include: [], timing: "document-end", frames: !0, start: start9 },
-    { id: "reply-forge", label: "Reply Forge", match: ["https://*.novomind.com/agent/client/index.imail"], include: [], timing: "document-end", frames: !0, start: start10 }
+    { id: "novomind-confirm-delete", label: "Confirm delete", match: ["https://*.novomind.com/*"], include: [], timing: "document-end", frames: !0, start: start5 },
+    { id: "novomind-email-response-index", label: "Email templates", match: ["https://*.novomind.com/*"], include: [], timing: "document-end", frames: !0, start: start6 },
+    { id: "novomind-house-contact-index", label: "House contact index", match: ["https://*.novomind.com/*"], include: ["/^https?:\\/\\/[^\\/@]*novomind[^\\/@]*\\//"], timing: "document-end", frames: !0, start: start7 },
+    { id: "novomind-offline-time-tracker", label: "Offline time tracker", match: ["https://*.novomind.com/*", "*://forms.office.com/*", "*://forms.cloud.microsoft/*", "*://forms.microsoft.com/*"], include: [], timing: "document-end", frames: !0, start: start8 },
+    { id: "novomind-toggle-extra-time", label: "Toggle extra time", match: ["https://*.novomind.com/*"], include: [], timing: "document-end", frames: !0, start: start9 },
+    { id: "novomind-update-email-bookingnumber-mybooking", label: "Booking number to MyBooking", match: ["https://*.novomind.com/*"], include: [], timing: "document-end", frames: !0, start: start10 },
+    { id: "reply-forge", label: "Reply Forge", match: ["https://*.novomind.com/agent/client/index.imail"], include: [], timing: "document-end", frames: !0, start: start11 }
   ];
 
   // build/match.mjs
@@ -3833,8 +3954,172 @@ ${response.responseText}`, elements.output.textContent = errorMsg, console.error
     return (url) => tests.some((t) => t(url));
   }
 
+  // bundle/monitor-panel.js
+  var POLL = "work-browser-tools.monitor.poll", REPLY = "work-browser-tools.monitor.reply", RESET = "work-browser-tools.monitor.reset", WAIT_MS = 400, REFRESH_MS = 2e3, TICK_MS = 500;
+  function frameName(win, href) {
+    let path;
+    try {
+      path = new URL(href).pathname;
+    } catch {
+      path = "?";
+    }
+    let own = String(win.location.href);
+    return /^(about|blob|data):/i.test(own) ? `${path} (${own.split(/[?#]/)[0]} frame)` : path;
+  }
+  function installResponder(win, state, href) {
+    let frame = frameName(win, href);
+    win.addEventListener("message", (e) => {
+      let d = e.data;
+      !d || typeof d != "object" || (d.type === RESET && reset(), !(d.type !== POLL || !e.source) && e.source.postMessage({ type: REPLY, id: d.id, frame, started: [...state.started], ...snapshot() }, "*"));
+    });
+  }
+  function allFrames2(top) {
+    let out = [], walk = (w, depth) => {
+      if (out.push(w), depth > 10) return;
+      let n = 0;
+      try {
+        n = w.frames.length;
+      } catch {
+        return;
+      }
+      for (let i = 0; i < n; i += 1)
+        try {
+          walk(w.frames[i], depth + 1);
+        } catch {
+        }
+    };
+    return walk(top, 0), out;
+  }
+  function collect(win, waitMs = WAIT_MS) {
+    let id = `${Date.now()}-${Math.random()}`, replies = [], onMessage = (e) => {
+      e.data?.type === REPLY && e.data.id === id && replies.push(e.data);
+    };
+    win.addEventListener("message", onMessage);
+    for (let w of allFrames2(win.top))
+      try {
+        w.postMessage({ type: POLL, id }, "*");
+      } catch {
+      }
+    return new Promise((resolve) => {
+      native.setTimeout.call(globalThis, () => {
+        win.removeEventListener("message", onMessage), resolve(replies);
+      }, waitMs);
+    });
+  }
+  function broadcastReset(win) {
+    for (let w of allFrames2(win.top))
+      try {
+        w.postMessage({ type: RESET }, "*");
+      } catch {
+      }
+  }
+  function summarize(replies, labels = {}) {
+    let by = /* @__PURE__ */ new Map(), longest = 0;
+    for (let r of replies) {
+      let min = Math.max(r.elapsedMs, 1) / 6e4;
+      r.elapsedMs > longest && (longest = r.elapsedMs);
+      for (let [id, s] of Object.entries(r.tools)) {
+        let row = by.get(id);
+        row || (row = { id, label: labels[id] ?? id, frames: 0, calls: 0, ms: 0, perMin: 0, msPerMin: 0, maxMs: 0, records: 0, observers: 0, intervals: 0, timers: 0 }, by.set(id, row)), r.started.includes(id) && (row.frames += 1), row.calls += s.calls, row.ms += s.ms, row.perMin += s.calls / min, row.msPerMin += s.ms / min, row.maxMs = Math.max(row.maxMs, s.maxMs), row.records += s.records, row.observers += s.observers, row.intervals += s.intervals, row.timers += s.timers;
+      }
+    }
+    let rows = [...by.values()].sort((a, b) => b.msPerMin - a.msPerMin || a.label.localeCompare(b.label)), total = { id: "", label: "All tools", frames: replies.length, calls: 0, ms: 0, perMin: 0, msPerMin: 0, maxMs: 0, records: 0, observers: 0, intervals: 0, timers: 0 };
+    for (let r of rows) {
+      for (let k of ["calls", "ms", "perMin", "msPerMin", "records", "observers", "intervals", "timers"]) total[k] += r[k];
+      total.maxMs = Math.max(total.maxMs, r.maxMs);
+    }
+    return { rows, total, minutes: longest / 6e4, frames: replies.length };
+  }
+  var fmt = (n, d = 0) => Number.isFinite(n) ? n.toFixed(d) : "–", busy = (msPerMin) => `${fmt(msPerMin / 600, 2)} %`, COLUMNS = [
+    ["Tool", (r) => r.label],
+    ["Frames", (r) => String(r.frames)],
+    ["Callbacks/min", (r) => fmt(r.perMin)],
+    ["Busy ms/min", (r) => fmt(r.msPerMin, 1)],
+    ["Busy", (r) => busy(r.msPerMin)],
+    ["Slowest ms", (r) => fmt(r.maxMs, 1)],
+    ["Observers", (r) => String(r.observers)],
+    ["Intervals", (r) => String(r.intervals)],
+    ["Timers", (r) => String(r.timers)]
+  ];
+  function asText(sum, replies, lag, labels = {}) {
+    let line = (r) => COLUMNS.map(([, f]) => f(r)).join("	"), out = [
+      `Work Browser Tools resource monitor — ${fmt(sum.minutes, 1)} min counted, ${sum.frames} frames`,
+      COLUMNS.map(([h]) => h).join("	"),
+      ...sum.rows.map(line),
+      line(sum.total),
+      lagText(lag),
+      "",
+      "By frame:"
+    ];
+    for (let r of replies) {
+      let s = summarize([r], labels);
+      out.push(`${r.frame}: ${fmt(s.total.msPerMin, 1)} ms/min, ${fmt(s.total.perMin)} callbacks/min, ${s.total.observers} observers; started: ${r.started.join(", ") || "none"}`);
+    }
+    return out.join(`
+`);
+  }
+  function lagText(lag) {
+    return lag.n ? `Page: a ${TICK_MS} ms timer fires on average ${fmt(lag.sum / lag.n, 1)} ms late, at worst ${fmt(lag.max)} ms (${lag.n} ticks while open)` : "Page: measuring…";
+  }
+  var CSS = `.box{position:fixed;top:16px;right:16px;z-index:2147483647;background:#fff;color:#1f2937;
+  font:12px/1.4 system-ui,sans-serif;border:1px solid #d1d5db;border-radius:8px;
+  box-shadow:0 8px 24px rgba(0,0,0,.18);padding:12px 14px;max-width:min(860px,calc(100vw - 32px))}
+h2{font-size:14px;margin:0 0 4px}p{margin:4px 0;color:#4b5563}
+table{border-collapse:collapse;margin:8px 0;font-variant-numeric:tabular-nums}
+th,td{padding:3px 8px;text-align:right;border-bottom:1px solid #e5e7eb;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}tr.total td{font-weight:600;border-top:2px solid #d1d5db}
+.row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
+button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;background:#f9fafb;cursor:pointer}`;
+  function openMonitor(win, tools) {
+    let doc = win.document, labels = Object.fromEntries(tools.map((t) => [t.id, t.label]));
+    labels[OTHER] = OTHER;
+    let el = (tag, text) => {
+      let n = doc.createElement(tag);
+      return text != null && (n.textContent = text), n;
+    };
+    doc.getElementById("work-browser-tools-monitor")?.remove();
+    let host = el("div");
+    host.id = "work-browser-tools-monitor";
+    let root = host.attachShadow({ mode: "open" }), style = el("style", CSS), box = el("div");
+    box.className = "box", box.setAttribute("role", "dialog"), box.setAttribute("aria-label", "Work Browser Tools resource monitor");
+    let head = el("p"), table = el("table"), page = el("p"), note = el("p", "Counts timers and page-change observers per tool, in every frame. Key and click handlers are not counted. Firefox times in whole milliseconds: one short callback reads 0 or 1 ms, but the totals add up."), buttons = el("div");
+    buttons.className = "row";
+    let mk = (text, fn) => {
+      let b = el("button", text);
+      return b.addEventListener("click", fn), buttons.append(b), b;
+    };
+    box.append(el("h2", "Work Browser Tools: resources"), head, table, page, note, buttons), root.append(style, box);
+    let lag = { n: 0, sum: 0, max: 0 }, expected = win.performance.now() + TICK_MS, tick = native.setInterval.call(globalThis, () => {
+      let t = win.performance.now(), late = Math.max(0, t - expected);
+      lag.n += 1, lag.sum += late, lag.max = Math.max(lag.max, late), expected = t + TICK_MS;
+    }, TICK_MS), last = { sum: summarize([], labels), replies: [] }, refresh = 0, closed = !1, render = () => {
+      let { sum } = last;
+      head.textContent = `${fmt(sum.minutes, 1)} min counted (since the page loaded or Reset), ${sum.frames} frames answering.`, table.replaceChildren();
+      let tr = (cells, cls, tag = "td") => {
+        let r = el("tr");
+        cls && (r.className = cls);
+        for (let c of cells) r.append(el(tag, c));
+        table.append(r);
+      };
+      tr(COLUMNS.map(([h]) => h), "", "th");
+      for (let r of sum.rows) tr(COLUMNS.map(([, f]) => f(r)));
+      tr(COLUMNS.map(([, f]) => f(sum.total)), "total"), page.textContent = lagText(lag);
+    }, update = async () => {
+      let replies = await collect(win);
+      closed || (last = { sum: summarize(replies, labels), replies }, render(), refresh = native.setTimeout.call(globalThis, update, REFRESH_MS));
+    }, close = () => {
+      closed = !0, native.clearTimeout.call(globalThis, refresh), native.clearInterval.call(globalThis, tick), host.remove();
+    };
+    return mk("Reset", () => {
+      broadcastReset(win), lag.n = 0, lag.sum = 0, lag.max = 0;
+    }), mk("Copy", () => {
+      let text = asText(last.sum, last.replies, lag, labels);
+      typeof GM_setClipboard == "function" ? GM_setClipboard(text, "text") : win.navigator.clipboard?.writeText(text);
+    }), mk("Close", close), render(), (doc.body || doc.documentElement).append(host), update(), { root, close };
+  }
+
   // bundle/loader.js
-  var DISABLED_KEY = "work-browser-tools.disabled", LOG2 = "[work-browser-tools]";
+  var DISABLED_KEY = "work-browser-tools.disabled", LOG3 = "[work-browser-tools]";
   function plan(tools, { href, isTop, disabled }) {
     let off = new Set(disabled), matched = tools.filter((t) => (isTop || t.frames) && siteTest(t)(href));
     return {
@@ -3856,7 +4141,7 @@ ${response.responseText}`, elements.output.textContent = errorMsg, console.error
   function runTool(tool, state, log = console) {
     let tag = `[work-browser-tools:${tool.id}]`;
     try {
-      let r = tool.start();
+      let r = runAs(tool.id, () => tool.start());
       state.started.push(tool.id), r && typeof r.then == "function" && r.then(void 0, (e) => {
         state.failed.push(tool.id), log.error(tag, "failed after starting:", e);
       });
@@ -3889,13 +4174,13 @@ ${response.responseText}`, elements.output.textContent = errorMsg, console.error
     let isTop = win === win.top, disabled = readDisabled(gm), p = plan(tools, { href: pageHref(win), isTop, disabled }), state = { matched: p.matched.map((t) => t.id), started: [], failed: [], switchedOff: p.switchedOff.map((t) => t.id) };
     Object.defineProperty(globalThis, "__workBrowserTools", { value: state, configurable: !0 });
     for (let t of p.toStart) whenTiming(t.timing, () => runTool(t, state), win.document, win);
-    return isTop && p.matched.length && gm.registerMenuCommand("Tools on this page…", () => openSwitchboard(p.matched, gm, win)), p.switchedOff.length && console.info(LOG2, "switched off here:", state.switchedOff.join(", ")), state;
+    return p.matched.length && installResponder(win, state, pageHref(win)), isTop && p.matched.length && (gm.registerMenuCommand("Tools on this page…", () => openSwitchboard(p.matched, gm, win)), gm.registerMenuCommand("Resource monitor…", () => openMonitor(win, tools))), p.switchedOff.length && console.info(LOG3, "switched off here:", state.switchedOff.join(", ")), state;
   }
   function readDisabled(gm) {
     let v = gm.getValue(DISABLED_KEY, []);
     return Array.isArray(v) ? v.filter((x) => typeof x == "string") : [];
   }
-  var CSS = `.box{position:fixed;top:16px;right:16px;z-index:2147483647;background:#fff;color:#1f2937;
+  var CSS2 = `.box{position:fixed;top:16px;right:16px;z-index:2147483647;background:#fff;color:#1f2937;
   font:13px/1.4 system-ui,sans-serif;border:1px solid #d1d5db;border-radius:8px;
   box-shadow:0 8px 24px rgba(0,0,0,.18);padding:12px 14px;min-width:240px}
 h2{font-size:14px;margin:0 0 8px}label{display:flex;gap:8px;align-items:center;padding:3px 0}
@@ -3916,7 +4201,7 @@ p{margin:8px 0 0;color:#6b7280;font-size:12px}`;
       return box.checked = !off.has(t.id), box;
     }), cancel = el("button", { class: "cancel", text: "Cancel" }), save = el("button", { class: "primary save", text: "Save and reload" });
     return root.append(
-      el("style", { text: CSS }),
+      el("style", { text: CSS2 }),
       el(
         "div",
         { class: "box", role: "dialog", "aria-label": "Work Browser Tools on this page" },
