@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Work Browser Tools
 // @namespace    https://github.com/KaiserXanderW/work-browser-tools-releases
-// @version      1.2.0
+// @version      1.2.2
 // @description  Work browser tools in one Violentmonkey entry. Menu: "Tools on this page…" switches single tools off.
 // @match        https://*.assd.com/*
 // @match        https://*.assd.com:9443/*
@@ -13,6 +13,10 @@
 // @match        https://*.novomind.com/agent/client/index.imail
 // @include      /^https:\/\/[^\/]*-[^\/]*\.assd\.com\//
 // @include      /^https?:\/\/[^\/@]*novomind[^\/@]*\//
+// @exclude-match *://*.novomind.com/agent/client/messageQueueContent.imail*
+// @exclude-match *://*.novomind.com/agent/client/emptyGrid.imail*
+// @exclude-match *://*.novomind.com/agent/client/disposeChild.html*
+// @exclude-match *://*.novomind.com/agent/client/pdfPreview.html*
 // @run-at       document-start
 // @grant        GM_addElement
 // @grant        GM_addStyle
@@ -1455,7 +1459,9 @@ ahi-toast[hidden] { display: none !important; }
       }
       function setupIframeListeners() {
         document.querySelectorAll("iframe").forEach((iframe) => {
-          iframe.dataset.scriptLoadHook || (iframe.dataset.scriptLoadHook = "true", iframe.addEventListener("load", () => attachToIframeDoc(iframe))), attachToIframeDoc(iframe);
+          iframe.dataset.scriptLoadHook || (iframe.dataset.scriptLoadHook = "true", iframe.addEventListener("load", () => {
+            lastIframe === iframe && (lastFocusedElement = null, lastIframe = null), attachToIframeDoc(iframe);
+          })), attachToIframeDoc(iframe);
         });
       }
       function attachToIframeDoc(iframe) {
@@ -4078,7 +4084,7 @@ ${response.responseText}`, elements.output.textContent = errorMsg, console.error
       paths: [...paths.values()].sort((a, b) => b.perMin - a.perMin).slice(0, 10),
       inputs: [...inputs].sort((a, b) => b[1] - a[1]),
       slowestInputMs: slowest,
-      stalls: stalls2.filter((s) => s.end >= since2).map((s) => ({ ...s, before: busiestBefore(s, [...frames2.values()], loads2) }))
+      stalls: stalls2.filter((s) => s.end >= since2).map((s) => ({ ...s, before: s.before ?? busiestBefore(s, [...frames2.values()], loads2) }))
     };
   }
   function busiestBefore(stall, frames2, loads2) {
@@ -4274,7 +4280,9 @@ ${response.responseText}`, elements.output.textContent = errorMsg, console.error
   }
   var CSS = `.box{position:fixed;top:16px;right:16px;z-index:2147483647;background:#fff;color:#1f2937;
   font:12px/1.4 system-ui,sans-serif;border:1px solid #d1d5db;border-radius:8px;
-  box-shadow:0 8px 24px rgba(0,0,0,.18);padding:12px 14px;max-width:min(860px,calc(100vw - 32px))}
+  box-shadow:0 8px 24px rgba(0,0,0,.18);padding:12px 14px;max-width:min(860px,calc(100vw - 32px));
+  box-sizing:border-box;max-height:calc(100vh - 32px);display:flex;flex-direction:column}
+.scroll{overflow:auto;min-height:0;flex:1 1 auto}.row{flex:none}
 h2{font-size:14px;margin:0 0 4px}p{margin:4px 0;color:#4b5563}
 table{border-collapse:collapse;margin:8px 0;font-variant-numeric:tabular-nums}
 th,td{padding:3px 8px;text-align:right;border-bottom:1px solid #e5e7eb;white-space:nowrap}
@@ -4288,7 +4296,9 @@ button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;
     let page = lag.n ? `page +${fmt2(lag.sum / lag.n, 1)} ms` : "page …";
     return `Tools ${fmt2(sum.total.msPerMin, 1)} ms/min · ${page}${nStalls == null ? "" : ` · ${nStalls} stalls`}`;
   }
+  var openPanel = null;
   function openMonitor(win, tools) {
+    openPanel?.close();
     let doc = win.document, labels = Object.fromEntries(tools.map((t) => [t.id, t.label]));
     labels[OTHER] = OTHER;
     let el = (tag, text) => {
@@ -4309,8 +4319,8 @@ button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;
     let mk = (text, fn) => {
       let b = el("button", text);
       return b.addEventListener("click", fn), buttons.append(b), b;
-    };
-    box.append(el("h2", "Work Browser Tools: resources"), head, table, page, starts, pageBox, note, buttons);
+    }, scroll = el("div");
+    scroll.className = "scroll", scroll.append(head, table, page, starts, pageBox, note), box.append(el("h2", "Work Browser Tools: resources"), scroll, buttons);
     let pill = el("button");
     pill.className = "pill", pill.title = "Work Browser Tools resource monitor: still measuring. Click to expand.", pill.hidden = !0, root.append(style, box, pill);
     let lag = { n: 0, sum: 0, max: 0 }, expected = win.performance.now() + TICK_MS, tick = native.setInterval.call(globalThis, () => {
@@ -4325,6 +4335,13 @@ button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;
       };
       tr(cols.map(([h]) => h), "th");
       for (let x of rows) tr(cols.map(([, f]) => f(x)), "td");
+    }, settleStalls = () => {
+      let ps = pageNow(), old = Date.now() - 3e3;
+      for (let st of stallsSince()) {
+        if (st.before || st.end > old) continue;
+        let m = ps.stalls.find((x) => x.end === st.end && x.ms === st.ms);
+        m && (st.before = m.before);
+      }
     }, pageNow = () => summarizePage(last.replies, loads.filter((x) => x.t >= countFrom), stallsSince(), Date.now()), render = () => {
       let { sum } = last;
       if (pill.textContent = pillText(sum, lag, watching ? stallsSince().length : null), collapsed) return;
@@ -4344,13 +4361,13 @@ button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;
       tr(COLUMNS.map(([, f]) => f(sum.total)), "total"), page.textContent = lagText(lag);
     }, update = async () => {
       let g = gen, replies = await collect(win);
-      closed || g !== gen || (last = { sum: summarize(replies, labels), replies }, render(), refresh = native.setTimeout.call(globalThis, update, collapsed ? COLLAPSED_REFRESH_MS : REFRESH_MS));
+      closed || g !== gen || (last = { sum: summarize(replies, labels), replies }, watching && settleStalls(), render(), refresh = native.setTimeout.call(globalThis, update, collapsed ? COLLAPSED_REFRESH_MS : REFRESH_MS));
     }, setCollapsed = (on2) => {
       collapsed = on2, box.hidden = on2, pill.hidden = !on2, render(), on2 || (gen += 1, native.clearTimeout.call(globalThis, refresh), update());
     };
     pill.addEventListener("click", () => setCollapsed(!1));
     let close = () => {
-      closed = !0, watching && broadcastWatch(win, !1), native.clearTimeout.call(globalThis, refresh), native.clearInterval.call(globalThis, tick), host.remove();
+      closed || (closed = !0, openPanel === handle && (openPanel = null), watching && broadcastWatch(win, !1), native.clearTimeout.call(globalThis, refresh), native.clearInterval.call(globalThis, tick), host.remove());
     };
     mk("Reset", () => {
       broadcastReset(win), lag.n = 0, lag.sum = 0, lag.max = 0, countFrom = Date.now();
@@ -4358,12 +4375,14 @@ button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;
     let watchBtn = mk("Watch the page", () => {
       watching = !watching, broadcastWatch(win, watching), watchBtn.textContent = watching ? "Stop watching" : "Watch the page", render();
     });
-    return mk("Copy", () => {
+    mk("Copy", () => {
       let extra = [startsText(summarizeLoads(loads, countFrom, Date.now()))];
       watching && extra.push("", pageText(pageNow(), Date.now()));
       let text = asText(last.sum, last.replies, lag, labels, extra);
       typeof GM_setClipboard == "function" ? GM_setClipboard(text, "text") : win.navigator.clipboard?.writeText(text);
-    }), mk("Collapse", () => setCollapsed(!0)), mk("Close", close), render(), (doc.body || doc.documentElement).append(host), update(), { root, close, collapse: () => setCollapsed(!0), expand: () => setCollapsed(!1), watch: () => watchBtn.click() };
+    }), mk("Collapse", () => setCollapsed(!0)), mk("Close", close), render(), (doc.body || doc.documentElement).append(host), update();
+    let handle = { root, close, collapse: () => setCollapsed(!0), expand: () => setCollapsed(!1), watch: () => watchBtn.click() };
+    return openPanel = handle, handle;
   }
 
   // bundle/loader.js
