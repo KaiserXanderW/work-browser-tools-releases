@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Work Browser Tools
 // @namespace    https://github.com/KaiserXanderW/work-browser-tools-releases
-// @version      1.3.2
+// @version      1.3.3
 // @description  Work browser tools in one Violentmonkey entry. Menu: "Tools on this page…" switches single tools off.
 // @match        https://*.assd.com/*
 // @match        https://*.assd.com:9443/*
@@ -1259,55 +1259,20 @@ ahi-toast[hidden] { display: none !important; }
   }
 
   // scripts/assd-login/src/main.js
-  var LOGIN_DONE_KEY = "assd-login-done", NAV_DONE_KEY = "assd-nav-done", OPENED_KEY = "assd-login.opened", CHANNEL = "assd-login";
+  var LOGIN_DONE_KEY = "assd-login-done", NAV_DONE_KEY = "assd-nav-done";
   var USERNAME_SELECTOR = 'input[type="text"], input[type="email"]', PASSWORD_SELECTOR = 'input[type="password"]', LOGIN_BUTTON_SEL = 'input.btn.btn-default.center-block[name="submit"][type="submit"]', TAGES_LINK_SELECTOR = 'a[href="/a_dayview/index"][title="Tagesübersicht"]', RESERV_LINK_SELECTOR = 'a[href="/s_reser/list"][title="Reservierung"]', LOG = "[assd-login]";
-  function violentmonkeyEnv() {
-    return {
-      doc: document,
-      win: window,
-      session: sessionStorage,
-      openInTab: (url, opts) => {
-        GM_openInTab(url, opts);
-      },
-      getValue: (k) => GM_getValue(k),
-      setValue: (k, v) => GM_setValue(k, v),
-      channel: () => typeof BroadcastChannel == "function" ? new BroadcastChannel(CHANNEL) : null,
-      now: () => Date.now()
-    };
-  }
-  function start3(env = violentmonkeyEnv()) {
-    let { doc, win, session } = env, origin = win.location.origin, openedMarks = () => {
-      let v = env.getValue(OPENED_KEY);
-      return v && typeof v == "object" ? v : {};
-    };
-    if ((openedMarks()[origin] ?? 0) > env.now()) {
-      session.setItem(LOGIN_DONE_KEY, "1"), session.setItem(NAV_DONE_KEY, "1");
-      let ch = env.channel();
-      ch && (ch.postMessage("started"), ch.close());
-      return;
-    }
+  function start3(doc = document, win = window, session = win.sessionStorage) {
     if (session.getItem(LOGIN_DONE_KEY) && session.getItem(NAV_DONE_KEY)) return;
-    let observer = null, observerTimer = 0, opened = !1;
-    function openPages(tagesUrl, reservUrl) {
-      if (opened) return;
-      opened = !0, session.setItem(NAV_DONE_KEY, "1");
-      let marks = openedMarks(), now2 = env.now();
-      for (let k of Object.keys(marks)) marks[k] > now2 || delete marks[k];
-      marks[origin] = now2 + 15e3, env.setValue(OPENED_KEY, marks), console.log(`${LOG} Opening Reservierung, then Tagesübersicht`);
-      let ch = env.channel(), timer = 0, done = !1, openSecond = () => {
-        done || (done = !0, win.clearTimeout(timer), ch && ch.close(), env.openInTab(tagesUrl, { active: !1, insert: !0 }));
-      };
-      ch && (ch.onmessage = (e) => {
-        e.data === "started" && openSecond();
-      }), timer = win.setTimeout(openSecond, 2e3), env.openInTab(reservUrl, { active: !0, insert: !0 });
-    }
-    function tryOpen() {
+    let observer = null, observerTimer = 0, clicked = !1;
+    function tryClick() {
       let tages = doc.querySelector(TAGES_LINK_SELECTOR), reserv = doc.querySelector(RESERV_LINK_SELECTOR);
-      return !tages || !reserv ? !1 : (openPages(tages.href, reserv.href), !0);
+      return !tages || !reserv ? !1 : (clicked || (clicked = !0, console.log(`${LOG} Clicking Tagesübersicht, then Reservierung`), tages.click(), win.setTimeout(() => {
+        reserv.click(), session.setItem(NAV_DONE_KEY, "1");
+      }, 800)), !0);
     }
     function afterLogin() {
-      session.setItem(LOGIN_DONE_KEY, "1"), !(session.getItem(NAV_DONE_KEY) || tryOpen() || observer || !doc.body) && (console.log(`${LOG} Waiting for the menu links`), observer = new MutationObserver(() => {
-        tryOpen() && (observer.disconnect(), win.clearTimeout(observerTimer));
+      session.setItem(LOGIN_DONE_KEY, "1"), !(session.getItem(NAV_DONE_KEY) || tryClick() || observer || !doc.body) && (console.log(`${LOG} Waiting for the menu links`), observer = new MutationObserver(() => {
+        tryClick() && (observer.disconnect(), win.clearTimeout(observerTimer));
       }), observer.observe(doc.body, { childList: !0, subtree: !0 }), observerTimer = win.setTimeout(() => {
         console.log(`${LOG} The menu links never appeared; giving up`), observer.disconnect();
       }, 15e3));
