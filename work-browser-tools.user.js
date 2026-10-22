@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Work Browser Tools
 // @namespace    https://github.com/KaiserXanderW/work-browser-tools-releases
-// @version      1.3.0
+// @version      1.3.2
 // @description  Work browser tools in one Violentmonkey entry. Menu: "Tools on this page…" switches single tools off.
 // @match        https://*.assd.com/*
 // @match        https://*.assd.com:9443/*
@@ -1204,6 +1204,10 @@ ahi-toast[hidden] { display: none !important; }
               noDataText: "No house list loaded. Click here to import the file (assd-houses JSON).",
               onSize: (size) => launcher.setContentSize(size),
               openLink: (url, background) => {
+                if (!background && pattern) {
+                  launcher.close(), deps.navigate(url);
+                  return;
+                }
                 deps.openInTab(url, background), background || launcher.close();
               }
             }), launcher.isOpen() && (panel.reset(), frame.focus(), panel.focusInput());
@@ -1237,6 +1241,9 @@ ahi-toast[hidden] { display: none !important; }
       openInTab: (url, background) => {
         GM_openInTab(url, { active: !background, insert: !0 });
       },
+      navigate: (url) => {
+        location.assign(url);
+      },
       addStyle: (css) => {
         GM_addStyle(css);
       },
@@ -1252,52 +1259,77 @@ ahi-toast[hidden] { display: none !important; }
   }
 
   // scripts/assd-login/src/main.js
-  function start3() {
-    (function() {
-      "use strict";
-      let USERNAME_SELECTOR = 'input[type="text"], input[type="email"]', PASSWORD_SELECTOR = 'input[type="password"]', LOGIN_BUTTON_SEL = 'input.btn.btn-default.center-block[name="submit"][type="submit"]', TAGES_LINK_SELECTOR = 'a[href="/a_dayview/index"][title="Tagesübersicht"]', RESERV_LINK_SELECTOR = 'a[href="/s_reser/list"][title="Reservierung"]', LOGIN_DONE_KEY = "assd-login-done", NAV_DONE_KEY = "assd-nav-done";
-      if (sessionStorage.getItem(LOGIN_DONE_KEY) && sessionStorage.getItem(NAV_DONE_KEY))
+  var LOGIN_DONE_KEY = "assd-login-done", NAV_DONE_KEY = "assd-nav-done", OPENED_KEY = "assd-login.opened", CHANNEL = "assd-login";
+  var USERNAME_SELECTOR = 'input[type="text"], input[type="email"]', PASSWORD_SELECTOR = 'input[type="password"]', LOGIN_BUTTON_SEL = 'input.btn.btn-default.center-block[name="submit"][type="submit"]', TAGES_LINK_SELECTOR = 'a[href="/a_dayview/index"][title="Tagesübersicht"]', RESERV_LINK_SELECTOR = 'a[href="/s_reser/list"][title="Reservierung"]', LOG = "[assd-login]";
+  function violentmonkeyEnv() {
+    return {
+      doc: document,
+      win: window,
+      session: sessionStorage,
+      openInTab: (url, opts) => {
+        GM_openInTab(url, opts);
+      },
+      getValue: (k) => GM_getValue(k),
+      setValue: (k, v) => GM_setValue(k, v),
+      channel: () => typeof BroadcastChannel == "function" ? new BroadcastChannel(CHANNEL) : null,
+      now: () => Date.now()
+    };
+  }
+  function start3(env = violentmonkeyEnv()) {
+    let { doc, win, session } = env, origin = win.location.origin, openedMarks = () => {
+      let v = env.getValue(OPENED_KEY);
+      return v && typeof v == "object" ? v : {};
+    };
+    if ((openedMarks()[origin] ?? 0) > env.now()) {
+      session.setItem(LOGIN_DONE_KEY, "1"), session.setItem(NAV_DONE_KEY, "1");
+      let ch = env.channel();
+      ch && (ch.postMessage("started"), ch.close());
+      return;
+    }
+    if (session.getItem(LOGIN_DONE_KEY) && session.getItem(NAV_DONE_KEY)) return;
+    let observer = null, observerTimer = 0, opened = !1;
+    function openPages(tagesUrl, reservUrl) {
+      if (opened) return;
+      opened = !0, session.setItem(NAV_DONE_KEY, "1");
+      let marks = openedMarks(), now2 = env.now();
+      for (let k of Object.keys(marks)) marks[k] > now2 || delete marks[k];
+      marks[origin] = now2 + 15e3, env.setValue(OPENED_KEY, marks), console.log(`${LOG} Opening Reservierung, then Tagesübersicht`);
+      let ch = env.channel(), timer = 0, done = !1, openSecond = () => {
+        done || (done = !0, win.clearTimeout(timer), ch && ch.close(), env.openInTab(tagesUrl, { active: !1, insert: !0 }));
+      };
+      ch && (ch.onmessage = (e) => {
+        e.data === "started" && openSecond();
+      }), timer = win.setTimeout(openSecond, 2e3), env.openInTab(reservUrl, { active: !0, insert: !0 });
+    }
+    function tryOpen() {
+      let tages = doc.querySelector(TAGES_LINK_SELECTOR), reserv = doc.querySelector(RESERV_LINK_SELECTOR);
+      return !tages || !reserv ? !1 : (openPages(tages.href, reserv.href), !0);
+    }
+    function afterLogin() {
+      session.setItem(LOGIN_DONE_KEY, "1"), !(session.getItem(NAV_DONE_KEY) || tryOpen() || observer || !doc.body) && (console.log(`${LOG} Waiting for the menu links`), observer = new MutationObserver(() => {
+        tryOpen() && (observer.disconnect(), win.clearTimeout(observerTimer));
+      }), observer.observe(doc.body, { childList: !0, subtree: !0 }), observerTimer = win.setTimeout(() => {
+        console.log(`${LOG} The menu links never appeared; giving up`), observer.disconnect();
+      }, 15e3));
+    }
+    let polls = 0;
+    function checkAndAct() {
+      let user = doc.querySelector(USERNAME_SELECTOR), pass = doc.querySelector(PASSWORD_SELECTOR), button = doc.querySelector(LOGIN_BUTTON_SEL);
+      if (!(user && pass && button)) {
+        afterLogin();
         return;
-      let postLoginObserver = null, observerTimeoutId = null, navClicked = !1;
-      function setupPostLoginClicks() {
-        if (postLoginObserver || (sessionStorage.setItem(LOGIN_DONE_KEY, "1"), sessionStorage.getItem(NAV_DONE_KEY))) return;
-        let tagesLink = document.querySelector(TAGES_LINK_SELECTOR), reservLink = document.querySelector(RESERV_LINK_SELECTOR);
-        if (tagesLink && reservLink) {
-          console.log("[assd-login] Both post-login links ready; clicking..."), tagesLink.click(), setTimeout(() => {
-            reservLink.click(), sessionStorage.setItem(NAV_DONE_KEY, "1");
-          }, 800);
-          return;
-        }
-        console.log("[assd-login] Setting up observer for post-login links..."), postLoginObserver = new MutationObserver(() => {
-          if (navClicked) return;
-          let tagesLink2 = document.querySelector(TAGES_LINK_SELECTOR), reservLink2 = document.querySelector(RESERV_LINK_SELECTOR);
-          tagesLink2 && reservLink2 && (console.log("[assd-login] Post-login links detected; clicking..."), navClicked = !0, tagesLink2.click(), setTimeout(() => {
-            reservLink2.click(), sessionStorage.setItem(NAV_DONE_KEY, "1");
-          }, 800), postLoginObserver.disconnect(), clearTimeout(observerTimeoutId));
-        }), postLoginObserver.observe(document.body, { childList: !0, subtree: !0 }), observerTimeoutId = setTimeout(() => {
-          console.log("[assd-login] Observer timeout; giving up on nav links."), postLoginObserver.disconnect();
-        }, 15e3);
       }
-      window.addEventListener("load", () => {
-        let polls = 0;
-        setTimeout(checkAndAct, 1500);
-        function checkAndAct() {
-          let userField = document.querySelector(USERNAME_SELECTOR), passField = document.querySelector(PASSWORD_SELECTOR), loginBtn = document.querySelector(LOGIN_BUTTON_SEL);
-          if (userField && passField && loginBtn) {
-            if (userField.value && passField.value) {
-              console.log("[assd-login] Credentials ready; submitting..."), loginBtn.click();
-              return;
-            }
-            if (++polls >= 30) {
-              console.log("[assd-login] Bitwarden fill timeout; giving up.");
-              return;
-            }
-            console.log("[assd-login] Waiting for Bitwarden fill..."), setTimeout(checkAndAct, 1e3);
-          } else
-            setupPostLoginClicks();
-        }
-      });
-    })();
+      if (user.value && pass.value) {
+        console.log(`${LOG} Credentials filled; submitting`), button.click();
+        return;
+      }
+      if (++polls >= 150) {
+        console.log(`${LOG} Bitwarden never filled the form; giving up`);
+        return;
+      }
+      win.setTimeout(checkAndAct, 200);
+    }
+    checkAndAct();
   }
 
   // scripts/assd-ocr-assist/src/main.js
@@ -1393,7 +1425,7 @@ ahi-toast[hidden] { display: none !important; }
   }
 
   // scripts/novomind-confirm-delete/src/main.js
-  var LOG = "[work-browser-tools:novomind-confirm-delete]", DELETE_BUTTON = "#mailToolbarBtn_delete", CONFIRM = ".mceWrapper.mceModal.mceConfirm", OK_BUTTON = ".mceButton.mceOk", TEXTS = ["Die Nachricht wurde noch nicht beantwortet", "Nachricht jetzt senden"];
+  var LOG2 = "[work-browser-tools:novomind-confirm-delete]", DELETE_BUTTON = "#mailToolbarBtn_delete", CONFIRM = ".mceWrapper.mceModal.mceConfirm", OK_BUTTON = ".mceButton.mceOk", TEXTS = ["Die Nachricht wurde noch nicht beantwortet", "Nachricht jetzt senden"];
   function findOk(doc) {
     for (let modal of doc.querySelectorAll(CONFIRM)) {
       let text = (modal.querySelector(".mceContent") || modal).textContent || "";
@@ -1416,7 +1448,7 @@ ahi-toast[hidden] { display: none !important; }
     obs.observe(doc.body || doc.documentElement, { childList: !0, subtree: !0 }), timer = setTimeout(stop, 2e3);
   }
   function click(ok) {
-    ok.click(), console.info(LOG, "confirmed the delete");
+    ok.click(), console.info(LOG2, "confirmed the delete");
   }
   function start5(doc = document) {
     doc.addEventListener("click", (e) => {
@@ -2445,7 +2477,7 @@ SOURCE 2 — THE CONTACT LIST
 <paste it here, or attach it / name the page>`;
 
   // scripts/novomind-house-contact-index/extension/src/userscript.ts
-  var LOG2 = "[house-contact-index]";
+  var LOG3 = "[house-contact-index]";
   function pickFile(doc, onFile) {
     doc.getElementById("hci-file-input")?.remove();
     let input = doc.createElement("input");
@@ -2460,7 +2492,7 @@ SOURCE 2 — THE CONTACT LIST
       try {
         text = await readFileText(file);
       } catch (e) {
-        handle?.toast(`Import failed: could not read ${file.name}`, !0), console.warn(LOG2, "could not read", file.name, e);
+        handle?.toast(`Import failed: could not read ${file.name}`, !0), console.warn(LOG3, "could not read", file.name, e);
         return;
       }
       let result = await importContacts(storage, text);
@@ -2468,7 +2500,7 @@ SOURCE 2 — THE CONTACT LIST
         handle?.toast(`Import failed: ${result.error}. The previous list is unchanged.`, !0);
         return;
       }
-      for (let w of result.warnings) console.warn(LOG2, "import:", w);
+      for (let w of result.warnings) console.warn(LOG3, "import:", w);
       handle?.dataChanged(), handle?.toast(`Imported ${result.data.houses.length} houses` + (result.warnings.length ? ` (${result.warnings.length} warnings, see the console)` : ""));
     }, chooseFile = () => pickFile(document, (f) => {
       importFile(f);
@@ -2660,7 +2692,7 @@ hci-toast[data-show="false"] { display: none !important; }
     }), GM_registerMenuCommand("Reset launcher position", () => {
       handle?.resetPosition();
     }), GM_registerMenuCommand("Restart Script", () => {
-      console.info(LOG2, "restarting"), mount().then(() => handle?.toast("House contact index restarted."));
+      console.info(LOG3, "restarting"), mount().then(() => handle?.toast("House contact index restarted."));
     })))();
   }
   function start7() {
@@ -2913,7 +2945,7 @@ hci-toast[data-show="false"] { display: none !important; }
 
   // scripts/novomind-toggle-extra-time/src/main.js
   var STORAGE_KEY = "novomind_extra_time_enabled", LINK = "#wacTimerExt > a";
-  var TOGGLE_ID = "vm-extra-time-toggle", LOG3 = "[work-browser-tools:novomind-toggle-extra-time]";
+  var TOGGLE_ID = "vm-extra-time-toggle", LOG4 = "[work-browser-tools:novomind-toggle-extra-time]";
   function isVisible(el, win = window) {
     if (!el || !el.isConnected) return !1;
     if (typeof el.checkVisibility == "function") return el.checkVisibility({ visibilityProperty: !0, opacityProperty: !0 });
@@ -2929,12 +2961,12 @@ hci-toast[data-show="false"] { display: none !important; }
         return;
       }
       let vis = isVisible(link, win);
-      if (vis && !wasVisible && console.info(LOG3, enabled() ? "+ is showing" : "+ is showing, but extra time is switched off"), wasVisible = vis, !vis || clickTimer !== null || !enabled() || Date.now() - lastClick < 3e4) return;
+      if (vis && !wasVisible && console.info(LOG4, enabled() ? "+ is showing" : "+ is showing, but extra time is switched off"), wasVisible = vis, !vis || clickTimer !== null || !enabled() || Date.now() - lastClick < 3e4) return;
       let delay = 1e3 + random() * 4e3;
       clickTimer = setTimeout(() => {
         clickTimer = null;
         let el = doc.querySelector(LINK);
-        !enabled() || !isVisible(el, win) || (lastClick = Date.now(), el.click(), console.info(LOG3, `clicked + after ${Math.round(delay)} ms`));
+        !enabled() || !isVisible(el, win) || (lastClick = Date.now(), el.click(), console.info(LOG4, `clicked + after ${Math.round(delay)} ms`));
       }, delay);
     }
     function startChecking() {
@@ -2954,7 +2986,7 @@ hci-toast[data-show="false"] { display: none !important; }
       title(), td.style.cssText = "width:30px;cursor:pointer;";
       let dot = doc.createElement("div");
       dot.style.cssText = "width:14px;height:14px;border-radius:2px;display:inline-block;vertical-align:middle;", td.append(dot), td.addEventListener("click", () => {
-        storage.setItem(STORAGE_KEY, String(!enabled())), title(), console.info(LOG3, "extra time switched", enabled() ? "on" : "off");
+        storage.setItem(STORAGE_KEY, String(!enabled())), title(), console.info(LOG4, "extra time switched", enabled() ? "on" : "off");
       }), td.addEventListener("mouseenter", title), answerBtn.insertAdjacentElement("beforebegin", td);
     }
     let scan = () => {
@@ -4405,7 +4437,7 @@ button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;
   }
 
   // bundle/loader.js
-  var DISABLED_KEY = "work-browser-tools.disabled", LOG4 = "[work-browser-tools]";
+  var DISABLED_KEY = "work-browser-tools.disabled", LOG5 = "[work-browser-tools]";
   function plan(tools, { href, isTop, disabled }) {
     let off = new Set(disabled), matched = tools.filter((t) => (isTop || t.frames) && siteTest(t)(href));
     return {
@@ -4461,7 +4493,7 @@ button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;
     let isTop = win === win.top, disabled = readDisabled(gm), p = plan(tools, { href: pageHref(win), isTop, disabled }), state = { matched: p.matched.map((t) => t.id), started: [], failed: [], switchedOff: p.switchedOff.map((t) => t.id) };
     Object.defineProperty(globalThis, "__workBrowserTools", { value: state, configurable: !0 });
     for (let t of p.toStart) whenTiming(t.timing, () => runTool(t, state), win.document, win);
-    return p.matched.length && installResponder(win, state, pageHref(win), bootMs()), isTop && p.matched.length && (gm.registerMenuCommand("Tools on this page…", () => openSwitchboard(p.matched, gm, win)), gm.registerMenuCommand("Resource monitor…", () => openMonitor(win, tools))), p.switchedOff.length && console.info(LOG4, "switched off here:", state.switchedOff.join(", ")), state;
+    return p.matched.length && installResponder(win, state, pageHref(win), bootMs()), isTop && p.matched.length && (gm.registerMenuCommand("Tools on this page…", () => openSwitchboard(p.matched, gm, win)), gm.registerMenuCommand("Resource monitor…", () => openMonitor(win, tools))), p.switchedOff.length && console.info(LOG5, "switched off here:", state.switchedOff.join(", ")), state;
   }
   function readDisabled(gm) {
     let v = gm.getValue(DISABLED_KEY, []);
