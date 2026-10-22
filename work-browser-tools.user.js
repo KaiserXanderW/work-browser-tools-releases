@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Work Browser Tools
 // @namespace    https://github.com/KaiserXanderW/work-browser-tools-releases
-// @version      1.2.2
+// @version      1.3.0
 // @description  Work browser tools in one Violentmonkey entry. Menu: "Tools on this page…" switches single tools off.
 // @match        https://*.assd.com/*
 // @match        https://*.assd.com:9443/*
@@ -2671,7 +2671,7 @@ hci-toast[data-show="false"] { display: none !important; }
   function start8() {
     (function() {
       "use strict";
-      let STORAGE_KEY = "offlineTimePayload", ACTIVE_KEY = "offlineTimeActiveId", FORM_SETTING = {
+      let STORAGE_KEY2 = "offlineTimePayload", ACTIVE_KEY = "offlineTimeActiveId", FORM_SETTING = {
         key: "offlineTimeFormUrl",
         caption: "Set offline-time form address…",
         question: "Address of the offline-time form (https://…):",
@@ -2683,7 +2683,7 @@ hci-toast[data-show="false"] { display: none !important; }
       function getEntries() {
         let entries;
         try {
-          entries = JSON.parse(GM_getValue(STORAGE_KEY, "[]"));
+          entries = JSON.parse(GM_getValue(STORAGE_KEY2, "[]"));
         } catch {
           return [];
         }
@@ -2693,7 +2693,7 @@ hci-toast[data-show="false"] { display: none !important; }
         }), migrated && saveEntries(entries), entries;
       }
       function saveEntries(entries) {
-        entries.length === 0 ? GM_deleteValue(STORAGE_KEY) : GM_setValue(STORAGE_KEY, JSON.stringify(entries));
+        entries.length === 0 ? GM_deleteValue(STORAGE_KEY2) : GM_setValue(STORAGE_KEY2, JSON.stringify(entries));
       }
       function removeEntry(id) {
         saveEntries(getEntries().filter(function(e) {
@@ -2791,7 +2791,7 @@ hci-toast[data-show="false"] { display: none !important; }
         }
         btn.addEventListener("click", function() {
           startTime ? stopTracking() : startTracking();
-        }), typeof GM_addValueChangeListener == "function" && GM_addValueChangeListener(STORAGE_KEY, function(_key, _oldVal, _newVal, remote) {
+        }), typeof GM_addValueChangeListener == "function" && GM_addValueChangeListener(STORAGE_KEY2, function(_key, _oldVal, _newVal, remote) {
           remote && renderPopup();
         }), renderPopup();
       }
@@ -2912,42 +2912,61 @@ hci-toast[data-show="false"] { display: none !important; }
   }
 
   // scripts/novomind-toggle-extra-time/src/main.js
-  function start9() {
-    (function() {
-      "use strict";
-      let STORAGE_KEY = "novomind_extra_time_enabled", enabled = localStorage.getItem(STORAGE_KEY) !== "false", lastClickTime = 0, pending = !1;
-      function clickPlus() {
-        if (!enabled || pending || Date.now() - lastClickTime < 3e4) return;
-        let link = document.querySelector("#wacTimerExt > a");
-        if (!link) return;
-        let style = window.getComputedStyle(link);
-        if (style.display === "none" || style.visibility === "hidden") return;
-        pending = !0;
-        let delay = 1e3 + Math.random() * 4e3;
-        setTimeout(() => {
-          if (pending = !1, lastClickTime = Date.now(), !enabled) return;
-          let el = document.querySelector("#wacTimerExt > a");
-          if (!el) return;
-          let s = window.getComputedStyle(el);
-          s.display === "none" || s.visibility === "hidden" || (el.click(), console.log("[VM] Clicked + link after", Math.round(delay), "ms"));
-        }, delay);
+  var STORAGE_KEY = "novomind_extra_time_enabled", LINK = "#wacTimerExt > a";
+  var TOGGLE_ID = "vm-extra-time-toggle", LOG3 = "[work-browser-tools:novomind-toggle-extra-time]";
+  function isVisible(el, win = window) {
+    if (!el || !el.isConnected) return !1;
+    if (typeof el.checkVisibility == "function") return el.checkVisibility({ visibilityProperty: !0, opacityProperty: !0 });
+    let s = win.getComputedStyle(el);
+    return s.display !== "none" && s.visibility !== "hidden" && el.getClientRects().length > 0;
+  }
+  function start9(doc = document, win = window, storage = win.localStorage, random = Math.random) {
+    let enabled = () => storage.getItem(STORAGE_KEY) !== "false", lastClick = -1 / 0, clickTimer = null, check = null, wasVisible = !1;
+    function tick() {
+      let link = doc.querySelector(LINK);
+      if (!link) {
+        stopChecking();
+        return;
       }
-      function injectToggle() {
-        let answerBtn = document.querySelector('td.maintoolbar[aria-label^="Annehmen"]');
-        if (!answerBtn || document.getElementById("vm-extra-time-toggle")) return;
-        let td = document.createElement("td");
-        td.id = "vm-extra-time-toggle", td.title = enabled ? "Extra time: ON" : "Extra time: OFF", td.style.cssText = "width:30px;cursor:pointer;", td.innerHTML = '<div style="width:14px;height:14px;border-radius:2px;display:inline-block;vertical-align:middle;"></div>', td.addEventListener("click", () => {
-          enabled = !enabled, localStorage.setItem(STORAGE_KEY, enabled), td.title = enabled ? "Extra time: ON" : "Extra time: OFF", console.log("[VM] Extra time toggled:", enabled);
-        }), answerBtn.insertAdjacentElement("beforebegin", td);
-      }
-      injectToggle(), clickPlus();
-      let scheduled = !1;
-      new MutationObserver(() => {
-        scheduled || (scheduled = !0, requestAnimationFrame(() => {
-          scheduled = !1, injectToggle(), clickPlus();
-        }));
-      }).observe(document.body, { childList: !0, subtree: !0 });
-    })();
+      let vis = isVisible(link, win);
+      if (vis && !wasVisible && console.info(LOG3, enabled() ? "+ is showing" : "+ is showing, but extra time is switched off"), wasVisible = vis, !vis || clickTimer !== null || !enabled() || Date.now() - lastClick < 3e4) return;
+      let delay = 1e3 + random() * 4e3;
+      clickTimer = setTimeout(() => {
+        clickTimer = null;
+        let el = doc.querySelector(LINK);
+        !enabled() || !isVisible(el, win) || (lastClick = Date.now(), el.click(), console.info(LOG3, `clicked + after ${Math.round(delay)} ms`));
+      }, delay);
+    }
+    function startChecking() {
+      check === null && (check = setInterval(tick, 1e3), tick());
+    }
+    function stopChecking() {
+      check !== null && clearInterval(check), check = null, wasVisible = !1;
+    }
+    function injectToggle() {
+      let answerBtn = doc.querySelector('td.maintoolbar[aria-label^="Annehmen"]');
+      if (!answerBtn || doc.getElementById(TOGGLE_ID)) return;
+      let td = doc.createElement("td");
+      td.id = TOGGLE_ID;
+      let title = () => {
+        td.title = enabled() ? "Extra time: ON" : "Extra time: OFF";
+      };
+      title(), td.style.cssText = "width:30px;cursor:pointer;";
+      let dot = doc.createElement("div");
+      dot.style.cssText = "width:14px;height:14px;border-radius:2px;display:inline-block;vertical-align:middle;", td.append(dot), td.addEventListener("click", () => {
+        storage.setItem(STORAGE_KEY, String(!enabled())), title(), console.info(LOG3, "extra time switched", enabled() ? "on" : "off");
+      }), td.addEventListener("mouseenter", title), answerBtn.insertAdjacentElement("beforebegin", td);
+    }
+    let scan = () => {
+      injectToggle(), check === null && doc.querySelector(LINK) && startChecking();
+    }, scheduled = !1, observer = new MutationObserver(() => {
+      scheduled || (scheduled = !0, requestAnimationFrame(() => {
+        scheduled = !1, scan();
+      }));
+    });
+    return observer.observe(doc.body || doc.documentElement, { childList: !0, subtree: !0 }), scan(), { stop: () => {
+      observer.disconnect(), stopChecking(), clickTimer !== null && clearTimeout(clickTimer);
+    } };
   }
 
   // scripts/novomind-update-email-bookingnumber-mybooking/src/main.js
@@ -4386,7 +4405,7 @@ button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;
   }
 
   // bundle/loader.js
-  var DISABLED_KEY = "work-browser-tools.disabled", LOG3 = "[work-browser-tools]";
+  var DISABLED_KEY = "work-browser-tools.disabled", LOG4 = "[work-browser-tools]";
   function plan(tools, { href, isTop, disabled }) {
     let off = new Set(disabled), matched = tools.filter((t) => (isTop || t.frames) && siteTest(t)(href));
     return {
@@ -4442,7 +4461,7 @@ button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;
     let isTop = win === win.top, disabled = readDisabled(gm), p = plan(tools, { href: pageHref(win), isTop, disabled }), state = { matched: p.matched.map((t) => t.id), started: [], failed: [], switchedOff: p.switchedOff.map((t) => t.id) };
     Object.defineProperty(globalThis, "__workBrowserTools", { value: state, configurable: !0 });
     for (let t of p.toStart) whenTiming(t.timing, () => runTool(t, state), win.document, win);
-    return p.matched.length && installResponder(win, state, pageHref(win), bootMs()), isTop && p.matched.length && (gm.registerMenuCommand("Tools on this page…", () => openSwitchboard(p.matched, gm, win)), gm.registerMenuCommand("Resource monitor…", () => openMonitor(win, tools))), p.switchedOff.length && console.info(LOG3, "switched off here:", state.switchedOff.join(", ")), state;
+    return p.matched.length && installResponder(win, state, pageHref(win), bootMs()), isTop && p.matched.length && (gm.registerMenuCommand("Tools on this page…", () => openSwitchboard(p.matched, gm, win)), gm.registerMenuCommand("Resource monitor…", () => openMonitor(win, tools))), p.switchedOff.length && console.info(LOG4, "switched off here:", state.switchedOff.join(", ")), state;
   }
   function readDisabled(gm) {
     let v = gm.getValue(DISABLED_KEY, []);
