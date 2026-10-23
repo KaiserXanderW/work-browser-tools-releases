@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Work Browser Tools
 // @namespace    https://github.com/KaiserXanderW/work-browser-tools-releases
-// @version      1.3.4
+// @version      1.3.5
 // @description  Work browser tools in one Violentmonkey entry. Menu: "Tools on this page…" switches single tools off.
 // @match        https://*.assd.com/*
 // @match        https://*.assd.com:9443/*
@@ -1263,8 +1263,10 @@ ahi-toast[hidden] { display: none !important; }
     (function() {
       "use strict";
       let USERNAME_SELECTOR = 'input[type="text"], input[type="email"]', PASSWORD_SELECTOR = 'input[type="password"]', LOGIN_BUTTON_SEL = 'input.btn.btn-default.center-block[name="submit"][type="submit"]', TAGES_LINK_SELECTOR = 'a[href="/a_dayview/index"][title="Tagesübersicht"]', RESERV_LINK_SELECTOR = 'a[href="/s_reser/list"][title="Reservierung"]', LOGIN_DONE_KEY = "assd-login-done", NAV_DONE_KEY = "assd-nav-done";
-      if (sessionStorage.getItem(LOGIN_DONE_KEY) && sessionStorage.getItem(NAV_DONE_KEY))
+      if (document.querySelector(USERNAME_SELECTOR) && document.querySelector(PASSWORD_SELECTOR) && document.querySelector(LOGIN_BUTTON_SEL) && (sessionStorage.removeItem(LOGIN_DONE_KEY), sessionStorage.removeItem(NAV_DONE_KEY)), sessionStorage.getItem(LOGIN_DONE_KEY) && sessionStorage.getItem(NAV_DONE_KEY)) {
+        console.log("[assd-login] Already done in this tab; nothing to do.");
         return;
+      }
       let postLoginObserver = null, observerTimeoutId = null, navClicked = !1;
       function setupPostLoginClicks() {
         if (postLoginObserver || (sessionStorage.setItem(LOGIN_DONE_KEY, "1"), sessionStorage.getItem(NAV_DONE_KEY))) return;
@@ -1285,7 +1287,7 @@ ahi-toast[hidden] { display: none !important; }
           console.log("[assd-login] Observer timeout; giving up on nav links."), postLoginObserver.disconnect();
         }, 15e3);
       }
-      window.addEventListener("load", () => {
+      let onLoad = () => {
         let polls = 0;
         setTimeout(checkAndAct, 1500);
         function checkAndAct() {
@@ -1303,7 +1305,8 @@ ahi-toast[hidden] { display: none !important; }
           } else
             setupPostLoginClicks();
         }
-      });
+      };
+      document.readyState === "complete" ? onLoad() : window.addEventListener("load", onLoad);
     })();
   }
 
